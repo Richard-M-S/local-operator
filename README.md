@@ -8,27 +8,17 @@ Local Operator is a local-first control and automation layer for:
 
 ## Current Status
 
-This repository is in early bootstrap.
+Working today:
+- Axum service startup
+- `/health` endpoint
+- config scaffolding
+- initial project layout
 
-Currently in scope:
-
-- Rust service skeleton
-- config loading
-- route structure
-- early service / tool / model layout
-- migration and persistence scaffolding
-- policy-oriented architecture direction
-
-Not yet complete:
-
-- real Docker integration
-- real Home Assistant integration
-- full audit pipeline
-- CLI workflow
-- LLM-assisted planning
-- automatic deployment / update flow
-
-This project should currently be treated as an **early architecture scaffold**, not a finished operator.
+Planned next:
+- `/api/status`
+- first real system tool
+- Docker inspection tools
+- Home Assistant reads
 
 ## v0.1 Goal
 
