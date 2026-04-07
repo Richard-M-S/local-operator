@@ -14,7 +14,6 @@ target
 **/mutants.out*/
 
 /target
-Cargo.lock
 .env
 operator.db
 *.log
