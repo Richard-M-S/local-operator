@@ -6,7 +6,7 @@ port = 8080
 level = "info"
 
 [database]
-url = "sqlite://operator.db"
+url = "sqlite:///opt/local-operator/data/operator.db"
 
 [docker]
 enabled = true
