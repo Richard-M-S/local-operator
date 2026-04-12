@@ -1,48 +1,62 @@
 use async_trait::async_trait;
-use serde::Deserialize;
+use bollard::container::ListContainersOptions;
+use bollard::Docker;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, tools::registry::Tool};
+use crate::{
+    error::AppError,
+    models::tool::{RiskTier, ToolDescriptor},
+};
 
-pub struct ListContainersTool;
+use super::registry::Tool;
 
-#[async_trait]
-impl Tool for ListContainersTool {
-    async fn execute(&self, _args: Value) -> Result<Value, AppError> {
-        Ok(json!({
-            "containers": [
-                { "name": "homeassistant", "state": "running", "health": "healthy" },
-                { "name": "zwave-js-ui", "state": "running", "health": "healthy" }
-            ]
-        }))
+pub struct DockerListContainersTool;
+
+impl DockerListContainersTool {
+    pub fn new() -> Self {
+        Self
     }
 }
 
-pub struct RestartContainerTool {
-    pub allowed: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RestartArgs {
-    name: String,
-}
-
 #[async_trait]
-impl Tool for RestartContainerTool {
-    async fn execute(&self, args: Value) -> Result<Value, AppError> {
-        let parsed: RestartArgs = serde_json::from_value(args)
-            .map_err(|e| AppError::BadRequest(format!("invalid args: {}", e)))?;
-
-        if !self.allowed.iter().any(|x| x == &parsed.name) {
-            return Err(AppError::PolicyDenied(format!(
-                "container '{}' is not in the allowed restart list",
-                parsed.name
-            )));
+impl Tool for DockerListContainersTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "docker.list_containers".to_string(),
+            description: "List local Docker containers".to_string(),
+            risk_tier: RiskTier::Tier0,
+            requires_confirmation: false,
         }
+    }
+
+    async fn execute(&self, _args: Value) -> Result<Value, AppError> {
+        let docker = Docker::connect_with_local_defaults()
+            .map_err(|e| AppError::Internal(format!("docker connect failed: {e}")))?;
+
+        let containers = docker
+            .list_containers(Some(ListContainersOptions::<String> {
+                all: true,
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| AppError::Internal(format!("docker list failed: {e}")))?;
+
+        let items: Vec<Value> = containers
+            .into_iter()
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "names": c.names,
+                    "image": c.image,
+                    "state": c.state,
+                    "status": c.status
+                })
+            })
+            .collect();
 
         Ok(json!({
-            "status": "success",
-            "message": format!("Container '{}' restarted.", parsed.name)
+            "count": items.len(),
+            "containers": items
         }))
     }
 }

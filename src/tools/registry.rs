@@ -2,58 +2,100 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::sync::RwLock;
 
-use crate::{config::AppConfig, error::AppError};
+use crate::{
+    config::AppConfig,
+    error::AppError,
+    models::tool::{ToolDescriptor, ToolExecutionResult},
+};
+
+use super::{
+    docker::DockerListContainersTool,
+    home_assistant::HomeAssistantSummaryTool,
+    system::SystemStatusTool,
+};
 
 #[async_trait]
 pub trait Tool: Send + Sync {
+    fn descriptor(&self) -> ToolDescriptor;
     async fn execute(&self, args: Value) -> Result<Value, AppError>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: Arc<HashMap<String, Arc<dyn Tool>>>,
+    tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
 }
 
 impl ToolRegistry {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        let registry = Self::default();
 
-        tools.insert(
-            "system.get_status".into(),
-            Arc::new(super::system::GetSystemStatusTool {}),
-        );
+        // Always available
+        registry.register(SystemStatusTool::new()).await;
 
-        tools.insert(
-            "docker.list_containers".into(),
-            Arc::new(super::docker::ListContainersTool {}),
-        );
+        // Conditional tools
+        if config.docker.enabled {
+            registry
+                .register(DockerListContainersTool::new())
+                .await;
+        }
 
-        tools.insert(
-            "docker.restart_container".into(),
-            Arc::new(super::docker::RestartContainerTool {
-                allowed: config.docker.allowed_restart_containers.clone(),
-            }),
-        );
+        if config.homeassistant.enabled {
+            registry
+                .register(HomeAssistantSummaryTool::new(
+                    config.homeassistant.base_url.clone(),
+                    config.homeassistant.token_env.clone(),
+                ))
+                .await;
+        }
 
-        tools.insert(
-            "ha.get_summary".into(),
-            Arc::new(super::home_assistant::GetHomeSummaryTool {
-                enabled: config.homeassistant.enabled,
-            }),
-        );
+        Ok(registry)
+    }
 
-        Ok(Self {
-            tools: Arc::new(tools),
+    pub async fn register<T>(&self, tool: T)
+    where
+        T: Tool + 'static,
+    {
+        let name = tool.descriptor().name.clone();
+        self.tools
+            .write()
+            .await
+            .insert(name, Arc::new(tool));
+    }
+
+    pub async fn execute(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<ToolExecutionResult, AppError> {
+        let tools = self.tools.read().await;
+
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
+
+        let output = tool.execute(args).await?;
+
+        Ok(ToolExecutionResult {
+            tool: name.to_string(),
+            ok: true,
+            output,
         })
     }
 
-    pub async fn execute(&self, name: &str, args: Value) -> Result<Value, AppError> {
-        let tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| AppError::NotFound(format!("tool '{}' not found", name)))?;
+    pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
+        let tools = self.tools.read().await;
 
-        tool.execute(args).await
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
+
+        Ok(tool.descriptor())
+    }
+
+    pub async fn list(&self) -> Vec<ToolDescriptor> {
+        let tools = self.tools.read().await;
+        tools.values().map(|t| t.descriptor()).collect()
     }
 }

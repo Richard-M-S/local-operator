@@ -1,5 +1,9 @@
 use crate::config::AppConfig;
-use crate::services::{audit_service::AuditService, operator_service::OperatorService, policy_engine::PolicyEngine};
+use crate::services::{
+    audit_service::AuditService,
+    operator_service::OperatorService,
+    policy_engine::PolicyEngine,
+};
 use crate::tools::registry::ToolRegistry;
 use sqlx::SqlitePool;
 

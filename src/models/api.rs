@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct CommandRequest {
@@ -8,18 +9,18 @@ pub struct CommandRequest {
 
 #[derive(Debug, Serialize)]
 pub struct CommandResponse {
-    pub request_id: uuid::Uuid,
-    pub parsed_intent: String,
-    pub allowed: bool,
-    pub risk_tier: i32,
+    pub ok: bool,
+    pub mode: String,
     pub message: String,
-    pub actions: serde_json::Value,
-    pub results: serde_json::Value,
+    pub data: Value,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ToolExecuteRequest {
     pub tool: String,
-    pub args: serde_json::Value,
+
+    #[serde(default)]
+    pub args: Value,
+
     pub confirm: Option<bool>,
 }

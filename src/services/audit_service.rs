@@ -1,24 +1,37 @@
-use crate::db::audit_repo::AuditRepo;
-use crate::models::audit::AuditEntry;
+use chrono::Utc;
+use serde::Serialize;
 use sqlx::SqlitePool;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditItem {
+    pub ts: String,
+    pub action: String,
+    pub ok: bool,
+}
 
 #[derive(Clone)]
 pub struct AuditService {
-    repo: AuditRepo,
+    db: SqlitePool,
 }
 
 impl AuditService {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
-            repo: AuditRepo::new(pool),
-        }
+    pub fn new(db: SqlitePool) -> Self {
+        Self { db }
     }
 
-    pub async fn save(&self, entry: AuditEntry) -> anyhow::Result<()> {
-        self.repo.insert(entry).await
+    pub async fn record_tool_call(&self, action: &str, ok: bool) -> anyhow::Result<()> {
+        let _ = &self.db;
+
+        let _item = AuditItem {
+            ts: Utc::now().to_rfc3339(),
+            action: action.to_string(),
+            ok,
+        };
+
+        Ok(())
     }
 
-    pub async fn recent(&self, limit: i64) -> anyhow::Result<Vec<AuditEntry>> {
-        self.repo.recent(limit).await
+    pub async fn recent(&self, _limit: i64) -> anyhow::Result<Vec<AuditItem>> {
+        Ok(vec![])
     }
 }

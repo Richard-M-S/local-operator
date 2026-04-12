@@ -1,17 +1,51 @@
-use axum::{routing::get, Router};
+mod app_state;
+mod config;
+mod error;
+mod models;
+mod routes;
+mod services;
+mod tools;
+
 use std::net::SocketAddr;
 
-async fn health() -> &'static str {
-    "ok"
-}
+use anyhow::Context;
+use sqlx::sqlite::SqlitePoolOptions;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::{app_state::AppState, config::AppConfig};
 
 #[tokio::main]
-async fn main() {
-    let app = Router::new().route("/health", get(health));
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
 
-    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-    println!("local-operator running at http://{}", addr);
+    let config = AppConfig::load().context("failed to load config")?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_new(config.logging.level.clone())
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    let db = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&config.database.url)
+        .await
+        .context("failed to connect to sqlite")?;
+
+    let state = AppState::new(config.clone(), db).await?;
+
+    let app = routes::router(state);
+
+    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
+        .parse()
+        .context("invalid bind address")?;
+
+    tracing::info!("local-operator listening on http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
