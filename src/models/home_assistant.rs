@@ -19,6 +19,5 @@ pub struct HaGetEntityArgs {
 #[derive(Debug, Clone, Deserialize)]
 pub struct HaSearchEntitiesArgs {
     pub query: String,
-    #[serde(default)]
     pub limit: Option<usize>,
 }

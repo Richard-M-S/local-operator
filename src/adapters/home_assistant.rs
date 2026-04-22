@@ -29,11 +29,7 @@ impl HomeAssistantClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!(
-            "{}/{}",
-            self.base_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        )
+        format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'))
     }
 
     pub async fn get_root(&self) -> Result<Value, AppError> {
@@ -53,25 +49,20 @@ impl HomeAssistantClient {
         let token = self.token()?;
         let url = self.url(path);
 
-        let resp = self
-            .client
+        let resp = self.client
             .get(url)
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|e| AppError::Internal(format!("home assistant request failed: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("HA request failed: {e}")))?;
 
         let status = resp.status();
-        let body = resp
-            .json::<Value>()
+        let body = resp.json::<Value>()
             .await
-            .map_err(|e| AppError::Internal(format!("failed to parse HA response: {e}")))?;
+            .map_err(|e| AppError::Internal(format!("HA parse error: {e}")))?;
 
         if !status.is_success() {
-            return Err(AppError::Internal(format!(
-                "home assistant returned status {}",
-                status
-            )));
+            return Err(AppError::Internal(format!("HA returned {}", status)));
         }
 
         Ok(body)

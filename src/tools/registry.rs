@@ -13,10 +13,7 @@ use crate::{
 
 use super::{
     docker::DockerListContainersTool,
-    home_assistant::{
-        HomeAssistantGetEntityTool, HomeAssistantSearchEntitiesTool, HomeAssistantStatesTool,
-        HomeAssistantSummaryTool,
-    },
+    home_assistant::{HaGetEntityTool, HaSearchTool, HaStatesTool, HaSummaryTool},
     system::SystemStatusTool,
 };
 
@@ -42,24 +39,16 @@ impl ToolRegistry {
         }
 
         if config.homeassistant.enabled {
-            let ha_client = HomeAssistantClient::new(
-                config.homeassistant.base_url.clone(),
-                config.homeassistant.token_env.clone(),
+            let client = HomeAssistantClient::new(
+                config.homeassistant.base_url,
+                config.homeassistant.token_env,
                 config.homeassistant.timeout_seconds,
             )?;
 
-            registry
-                .register(HomeAssistantSummaryTool::new(ha_client.clone()))
-                .await;
-            registry
-                .register(HomeAssistantStatesTool::new(ha_client.clone()))
-                .await;
-            registry
-                .register(HomeAssistantGetEntityTool::new(ha_client.clone()))
-                .await;
-            registry
-                .register(HomeAssistantSearchEntitiesTool::new(ha_client))
-                .await;
+            registry.register(HaSummaryTool::new(client.clone())).await;
+            registry.register(HaStatesTool::new(client.clone())).await;
+            registry.register(HaGetEntityTool::new(client.clone())).await;
+            registry.register(HaSearchTool::new(client)).await;
         }
 
         Ok(registry)
@@ -69,8 +58,10 @@ impl ToolRegistry {
     where
         T: Tool + 'static,
     {
-        let name = tool.descriptor().name.clone();
-        self.tools.write().await.insert(name, Arc::new(tool));
+        self.tools
+            .write()
+            .await
+            .insert(tool.descriptor().name.clone(), Arc::new(tool));
     }
 
     pub async fn execute(
@@ -79,30 +70,18 @@ impl ToolRegistry {
         args: Value,
     ) -> Result<ToolExecutionResult, AppError> {
         let tools = self.tools.read().await;
-        let tool = tools
-            .get(name)
-            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
+        let tool = tools.get(name).ok_or(AppError::NotFound(name.into()))?;
 
         let output = tool.execute(args).await?;
 
         Ok(ToolExecutionResult {
-            tool: name.to_string(),
+            tool: name.into(),
             ok: true,
             output,
         })
     }
 
-    pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
-        let tools = self.tools.read().await;
-        let tool = tools
-            .get(name)
-            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
-
-        Ok(tool.descriptor())
-    }
-
     pub async fn list(&self) -> Vec<ToolDescriptor> {
-        let tools = self.tools.read().await;
-        tools.values().map(|t| t.descriptor()).collect()
+        self.tools.read().await.values().map(|t| t.descriptor()).collect()
     }
 }
