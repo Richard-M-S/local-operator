@@ -5,6 +5,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
+    adapters::home_assistant::HomeAssistantClient,
     config::AppConfig,
     error::AppError,
     models::tool::{ToolDescriptor, ToolExecutionResult},
@@ -12,7 +13,10 @@ use crate::{
 
 use super::{
     docker::DockerListContainersTool,
-    home_assistant::HomeAssistantSummaryTool,
+    home_assistant::{
+        HomeAssistantGetEntityTool, HomeAssistantSearchEntitiesTool, HomeAssistantStatesTool,
+        HomeAssistantSummaryTool,
+    },
     system::SystemStatusTool,
 };
 
@@ -31,22 +35,30 @@ impl ToolRegistry {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let registry = Self::default();
 
-        // Always available
         registry.register(SystemStatusTool::new()).await;
 
-        // Conditional tools
         if config.docker.enabled {
-            registry
-                .register(DockerListContainersTool::new())
-                .await;
+            registry.register(DockerListContainersTool::new()).await;
         }
 
         if config.homeassistant.enabled {
+            let ha_client = HomeAssistantClient::new(
+                config.homeassistant.base_url.clone(),
+                config.homeassistant.token_env.clone(),
+                config.homeassistant.timeout_seconds,
+            )?;
+
             registry
-                .register(HomeAssistantSummaryTool::new(
-                    config.homeassistant.base_url.clone(),
-                    config.homeassistant.token_env.clone(),
-                ))
+                .register(HomeAssistantSummaryTool::new(ha_client.clone()))
+                .await;
+            registry
+                .register(HomeAssistantStatesTool::new(ha_client.clone()))
+                .await;
+            registry
+                .register(HomeAssistantGetEntityTool::new(ha_client.clone()))
+                .await;
+            registry
+                .register(HomeAssistantSearchEntitiesTool::new(ha_client))
                 .await;
         }
 
@@ -58,10 +70,7 @@ impl ToolRegistry {
         T: Tool + 'static,
     {
         let name = tool.descriptor().name.clone();
-        self.tools
-            .write()
-            .await
-            .insert(name, Arc::new(tool));
+        self.tools.write().await.insert(name, Arc::new(tool));
     }
 
     pub async fn execute(
@@ -70,7 +79,6 @@ impl ToolRegistry {
         args: Value,
     ) -> Result<ToolExecutionResult, AppError> {
         let tools = self.tools.read().await;
-
         let tool = tools
             .get(name)
             .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
@@ -86,7 +94,6 @@ impl ToolRegistry {
 
     pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
         let tools = self.tools.read().await;
-
         let tool = tools
             .get(name)
             .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;

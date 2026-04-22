@@ -37,6 +37,7 @@ pub struct HomeAssistantConfig {
     pub enabled: bool,
     pub base_url: String,
     pub token_env: String,
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

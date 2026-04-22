@@ -6,7 +6,7 @@ port = 8080
 level = "info"
 
 [database]
-url = "sqlite:///opt/local-operator/data/operator.db"
+url = "sqlite://operator.db"
 
 [docker]
 enabled = true
@@ -16,6 +16,7 @@ allowed_restart_containers = ["homeassistant", "zwave-js-ui", "ollama"]
 enabled = true
 base_url = "http://homeassistant.local:8123"
 token_env = "HA_TOKEN"
+timeout_seconds = 10
 
 [policy]
 allow_tier1_without_confirm = true
