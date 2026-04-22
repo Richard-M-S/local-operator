@@ -13,3 +13,8 @@ enabled = true
 base_url = "http://homeassistant.local:8123"
 token_env = "HA_TOKEN"
 timeout_seconds = 10
+
+[policy]
+allow_tier1_without_confirm = true
+allow_tier2_without_confirm = false
+block_tier3 = true

@@ -84,4 +84,13 @@ impl ToolRegistry {
     pub async fn list(&self) -> Vec<ToolDescriptor> {
         self.tools.read().await.values().map(|t| t.descriptor()).collect()
     }
+
+    pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
+    let tools = self.tools.read().await;
+    let tool = tools
+        .get(name)
+        .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
+
+    Ok(tool.descriptor())
+}
 }
