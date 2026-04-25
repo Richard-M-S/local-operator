@@ -1,4 +1,6 @@
 use axum::{extract::State, Json};
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{
     app_state::AppState,
@@ -15,7 +17,6 @@ pub async fn command(
         .run_command(&req.input, req.confirm.unwrap_or(false))
         .await?;
     Ok(Json(result))
-
 }
 
 pub async fn execute_tool(
@@ -23,13 +24,14 @@ pub async fn execute_tool(
     Json(req): Json<ToolExecuteRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let descriptor = state.tools.describe(&req.tool).await?;
-        state
+    state
         .policy
         .check_tool_execution(descriptor.risk_tier, req.confirm.unwrap_or(false))?;
 
     let result = state.tools.execute(&req.tool, req.args).await?;
     let _ = state.audit.record_tool_call(&req.tool, true).await;
 
-    Ok(Json(serde_json::to_value(result).map_err(|e| AppError::Internal(e.to_string()))?))
-
+    Ok(Json(
+        serde_json::to_value(result).map_err(|e| AppError::Internal(e.to_string()))?,
+    ))
 }

@@ -29,7 +29,11 @@ impl HomeAssistantClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
     }
 
     pub async fn get_root(&self) -> Result<Value, AppError> {
@@ -49,7 +53,8 @@ impl HomeAssistantClient {
         let token = self.token()?;
         let url = self.url(path);
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(url)
             .bearer_auth(token)
             .send()
@@ -57,7 +62,8 @@ impl HomeAssistantClient {
             .map_err(|e| AppError::Internal(format!("HA request failed: {e}")))?;
 
         let status = resp.status();
-        let body = resp.json::<Value>()
+        let body = resp
+            .json::<Value>()
             .await
             .map_err(|e| AppError::Internal(format!("HA parse error: {e}")))?;
 

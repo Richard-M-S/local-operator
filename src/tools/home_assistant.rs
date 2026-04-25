@@ -131,6 +131,7 @@ impl Tool for HaStatesTool {
     async fn execute(&self, _: Value) -> Result<Value, AppError> {
         let raw = self.client.get_states().await?;
         let entities = state_array(&raw);
+        let entities = state_array(&raw);
 
         Ok(json!({
             "count": entities.len(),

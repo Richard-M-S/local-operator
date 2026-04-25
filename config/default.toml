@@ -3,14 +3,14 @@ host = "0.0.0.0"
 port = 8080
 
 [database]
-url = "sqlite://operator.db"
+url = "sqlite:///opt/local-operator/data/operator.db"
 
 [docker]
 enabled = true
 
 [homeassistant]
 enabled = true
-base_url = "http://homeassistant.local:8123"
+base_url = "http://localhost:8123"
 token_env = "HA_TOKEN"
 timeout_seconds = 10
 

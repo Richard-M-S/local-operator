@@ -1,8 +1,4 @@
-use crate::{
-    config::PolicyConfig,
-    error::AppError,
-    models::tool::RiskTier,
-};
+use crate::{config::PolicyConfig, error::AppError, models::tool::RiskTier};
 
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
@@ -14,11 +10,7 @@ impl PolicyEngine {
         Self { config }
     }
 
-    pub fn check_tool_execution(
-        &self,
-        risk_tier: RiskTier,
-        confirm: bool,
-    ) -> Result<(), AppError> {
+    pub fn check_tool_execution(&self, risk_tier: RiskTier, confirm: bool) -> Result<(), AppError> {
         match risk_tier {
             RiskTier::Tier0 => Ok(()),
             RiskTier::Tier1 => {

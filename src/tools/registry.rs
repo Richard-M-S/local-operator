@@ -67,11 +67,7 @@ impl ToolRegistry {
             .insert(tool.descriptor().name.clone(), Arc::new(tool));
     }
 
-    pub async fn execute(
-        &self,
-        name: &str,
-        args: Value,
-    ) -> Result<ToolExecutionResult, AppError> {
+    pub async fn execute(&self, name: &str, args: Value) -> Result<ToolExecutionResult, AppError> {
         let tools = self.tools.read().await;
 
         let tool = tools
