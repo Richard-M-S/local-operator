@@ -18,3 +18,10 @@ timeout_seconds = 10
 allow_tier1_without_confirm = true
 allow_tier2_without_confirm = false
 block_tier3 = true
+
+[llm]
+enabled = true
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "qwen2.5:14b"
+timeout_seconds = 60

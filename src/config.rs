@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub docker: DockerConfig,
     pub homeassistant: HomeAssistantConfig,
     pub policy: PolicyConfig,
+    pub llm: LlmConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,6 +39,15 @@ pub struct PolicyConfig {
     pub allow_tier1_without_confirm: bool,
     pub allow_tier2_without_confirm: bool,
     pub block_tier3: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmConfig {
+    pub enabled: bool,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout_seconds: u64,
 }
 
 impl AppConfig {
