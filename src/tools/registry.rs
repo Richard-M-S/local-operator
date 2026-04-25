@@ -13,7 +13,9 @@ use crate::{
 
 use super::{
     docker::DockerListContainersTool,
-    home_assistant::{HaGetEntityTool, HaSearchTool, HaStatesTool, HaSummaryTool},
+    home_assistant::{
+        HaGetEntityTool, HaOverviewTool, HaSearchTool, HaStatesTool, HaSummaryTool,
+    },
     system::SystemStatusTool,
 };
 
@@ -48,7 +50,8 @@ impl ToolRegistry {
             registry.register(HaSummaryTool::new(client.clone())).await;
             registry.register(HaStatesTool::new(client.clone())).await;
             registry.register(HaGetEntityTool::new(client.clone())).await;
-            registry.register(HaSearchTool::new(client)).await;
+            registry.register(HaSearchTool::new(client.clone())).await;
+            registry.register(HaOverviewTool::new(client)).await;
         }
 
         Ok(registry)
@@ -70,7 +73,10 @@ impl ToolRegistry {
         args: Value,
     ) -> Result<ToolExecutionResult, AppError> {
         let tools = self.tools.read().await;
-        let tool = tools.get(name).ok_or(AppError::NotFound(name.into()))?;
+
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
 
         let output = tool.execute(args).await?;
 
@@ -81,16 +87,22 @@ impl ToolRegistry {
         })
     }
 
-    pub async fn list(&self) -> Vec<ToolDescriptor> {
-        self.tools.read().await.values().map(|t| t.descriptor()).collect()
+    pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
+        let tools = self.tools.read().await;
+
+        let tool = tools
+            .get(name)
+            .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
+
+        Ok(tool.descriptor())
     }
 
-    pub async fn describe(&self, name: &str) -> Result<ToolDescriptor, AppError> {
-    let tools = self.tools.read().await;
-    let tool = tools
-        .get(name)
-        .ok_or_else(|| AppError::NotFound(format!("tool not found: {}", name)))?;
-
-    Ok(tool.descriptor())
-}
+    pub async fn list(&self) -> Vec<ToolDescriptor> {
+        self.tools
+            .read()
+            .await
+            .values()
+            .map(|t| t.descriptor())
+            .collect()
+    }
 }

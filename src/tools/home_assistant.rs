@@ -28,7 +28,11 @@ fn summarize_entity(raw: &Value) -> Option<HaEntitySummary> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let domain = entity_id.split('.').next().unwrap_or("unknown").to_string();
+    let domain = entity_id
+        .split('.')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
 
     Some(HaEntitySummary {
         entity_id,
@@ -38,6 +42,42 @@ fn summarize_entity(raw: &Value) -> Option<HaEntitySummary> {
         domain,
         attributes,
     })
+}
+
+fn state_array(raw: &Value) -> Vec<HaEntitySummary> {
+    raw.as_array()
+        .map(|items| items.iter().filter_map(summarize_entity).collect())
+        .unwrap_or_default()
+}
+
+fn is_problem_entity(entity: &HaEntitySummary) -> bool {
+    let friendly = entity
+        .friendly_name
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+
+    let device_class = entity
+        .attributes
+        .get("device_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    entity.state == "on"
+        && (device_class == "problem"
+            || friendly.contains("jammed")
+            || friendly.contains("over-current")
+            || friendly.contains("disabled")
+            || friendly.contains("alert")
+            || friendly.contains("error"))
+}
+
+fn friendly_or_id(entity: &HaEntitySummary) -> String {
+    entity
+        .friendly_name
+        .clone()
+        .unwrap_or_else(|| entity.entity_id.clone())
 }
 
 pub struct HaSummaryTool {
@@ -55,7 +95,7 @@ impl Tool for HaSummaryTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "ha.get_summary".into(),
-            description: "Basic HA connectivity check".into(),
+            description: "Basic Home Assistant connectivity check".into(),
             risk_tier: RiskTier::Tier0,
             requires_confirmation: false,
         }
@@ -82,7 +122,7 @@ impl Tool for HaStatesTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "ha.get_states".into(),
-            description: "List HA entities".into(),
+            description: "List summarized Home Assistant entities".into(),
             risk_tier: RiskTier::Tier0,
             requires_confirmation: false,
         }
@@ -90,13 +130,12 @@ impl Tool for HaStatesTool {
 
     async fn execute(&self, _: Value) -> Result<Value, AppError> {
         let raw = self.client.get_states().await?;
+        let entities = state_array(&raw);
 
-        let entities: Vec<HaEntitySummary> = raw
-            .as_array()
-            .map(|items| items.iter().filter_map(summarize_entity).collect())
-            .unwrap_or_default();
-
-        Ok(json!({ "count": entities.len(), "entities": entities }))
+        Ok(json!({
+            "count": entities.len(),
+            "entities": entities
+        }))
     }
 }
 
@@ -115,7 +154,7 @@ impl Tool for HaGetEntityTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "ha.get_entity".into(),
-            description: "Get one entity".into(),
+            description: "Get one Home Assistant entity by entity_id".into(),
             risk_tier: RiskTier::Tier0,
             requires_confirmation: false,
         }
@@ -144,7 +183,7 @@ impl Tool for HaSearchTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "ha.search_entities".into(),
-            description: "Search entities".into(),
+            description: "Search Home Assistant entities by id, friendly name, or domain".into(),
             risk_tier: RiskTier::Tier0,
             requires_confirmation: false,
         }
@@ -158,24 +197,195 @@ impl Tool for HaSearchTool {
         let query = args.query.to_lowercase();
         let limit = args.limit.unwrap_or(20);
 
-        let results: Vec<HaEntitySummary> = raw
-            .as_array()
-            .map(|items| {
-                items.iter()
-                    .filter_map(summarize_entity)
-                    .filter(|e| {
-                        e.entity_id.to_lowercase().contains(&query)
-                            || e.friendly_name
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_lowercase()
-                                .contains(&query)
-                    })
-                    .take(limit)
-                    .collect()
+        let results: Vec<HaEntitySummary> = state_array(&raw)
+            .into_iter()
+            .filter(|e| {
+                e.entity_id.to_lowercase().contains(&query)
+                    || e.friendly_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+                    || e.domain.to_lowercase().contains(&query)
             })
-            .unwrap_or_default();
+            .take(limit)
+            .collect();
 
         Ok(json!({ "results": results }))
+    }
+}
+
+pub struct HaOverviewTool {
+    client: HomeAssistantClient,
+}
+
+impl HaOverviewTool {
+    pub fn new(client: HomeAssistantClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for HaOverviewTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "ha.get_overview".into(),
+            description: "Return compact LLM-ready Home Assistant house overview".into(),
+            risk_tier: RiskTier::Tier0,
+            requires_confirmation: false,
+        }
+    }
+
+    async fn execute(&self, _: Value) -> Result<Value, AppError> {
+        let raw = self.client.get_states().await?;
+        let entities = state_array(&raw);
+
+        let people: Vec<Value> = entities
+            .iter()
+            .filter(|e| e.domain == "person")
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state
+                })
+            })
+            .collect();
+
+        let house_mode = entities
+            .iter()
+            .find(|e| e.entity_id == "input_select.house_mode")
+            .map(|e| e.state.clone());
+
+        let locks: Vec<Value> = entities
+            .iter()
+            .filter(|e| e.domain == "lock")
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state
+                })
+            })
+            .collect();
+
+        let doors: Vec<Value> = entities
+            .iter()
+            .filter(|e| {
+                e.domain == "binary_sensor"
+                    && (
+                        e.attributes
+                            .get("device_class")
+                            .and_then(|v| v.as_str())
+                            == Some("door")
+                        || e.entity_id.to_lowercase().contains("door")
+                        || friendly_or_id(e).to_lowercase().contains("door")
+                    )
+            })
+            .map(|e| {
+                let interpreted = if e.state == "on" {
+                    "open"
+                } else if e.state == "off" {
+                    "closed"
+                } else {
+                    e.state.as_str()
+                };
+
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state,
+                    "interpreted": interpreted
+                })
+            })
+            .collect();
+
+        let vacuums: Vec<Value> = entities
+            .iter()
+            .filter(|e| e.domain == "vacuum")
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state,
+                    "battery": e.attributes.get("battery_level").cloned()
+                })
+            })
+            .collect();
+
+        let weather: Vec<Value> = entities
+            .iter()
+            .filter(|e| e.domain == "weather")
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state,
+                    "temperature": e.attributes.get("temperature").cloned(),
+                    "temperature_unit": e.attributes.get("temperature_unit").cloned(),
+                    "humidity": e.attributes.get("humidity").cloned(),
+                    "wind_speed": e.attributes.get("wind_speed").cloned(),
+                    "wind_speed_unit": e.attributes.get("wind_speed_unit").cloned()
+                })
+            })
+            .collect();
+
+        let media_players: Vec<Value> = entities
+            .iter()
+            .filter(|e| e.domain == "media_player")
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state
+                })
+            })
+            .collect();
+
+        let energy_devices: Vec<Value> = entities
+            .iter()
+            .filter(|e| {
+                e.domain == "switch"
+                    && (
+                        e.entity_id.to_lowercase().contains("washer")
+                        || e.entity_id.to_lowercase().contains("dryer")
+                        || friendly_or_id(e).to_lowercase().contains("washer")
+                        || friendly_or_id(e).to_lowercase().contains("dryer")
+                    )
+            })
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state
+                })
+            })
+            .collect();
+
+        let problems: Vec<Value> = entities
+            .iter()
+            .filter(|e| is_problem_entity(e))
+            .map(|e| {
+                json!({
+                    "entity_id": e.entity_id,
+                    "name": friendly_or_id(e),
+                    "state": e.state,
+                    "device_class": e.attributes.get("device_class").cloned()
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "entity_count": entities.len(),
+            "people": people,
+            "house_mode": house_mode,
+            "locks": locks,
+            "doors": doors,
+            "vacuums": vacuums,
+            "weather": weather,
+            "media_players": media_players,
+            "energy_devices": energy_devices,
+            "problems": problems
+        }))
     }
 }
