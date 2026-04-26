@@ -2,7 +2,6 @@ use serde_json::json;
 
 use crate::{
     error::AppError,
-    models::api::CommandResponse,
     services::llm_service::LlmService,
     tools::registry::ToolRegistry,
     models::api::{ChatResponse, CommandResponse},
