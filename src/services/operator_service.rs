@@ -5,6 +5,7 @@ use crate::{
     models::api::CommandResponse,
     services::llm_service::LlmService,
     tools::registry::ToolRegistry,
+    models::api::{ChatResponse, CommandResponse},
 };
 
 use super::{audit_service::AuditService, policy_engine::PolicyEngine};
@@ -31,7 +32,54 @@ impl OperatorService {
             llm,
         }
     }
+    pub async fn run_chat(
+        &self,
+        message: &str,
+        include_home: bool,
+    ) -> Result<ChatResponse, AppError> {
+        let llm = self
+            .llm
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
 
+        if include_home {
+            let tool_name = "ha.get_overview";
+
+            let descriptor = self.tools.describe(tool_name).await?;
+            self.policy
+                .check_tool_execution(descriptor.risk_tier, false)?;
+
+            let result = self.tools.execute(tool_name, json!({})).await?;
+            let _ = self.audit.record_tool_call(tool_name, true).await;
+
+            let response = llm
+                .summarize_home_overview(message, &result.output)
+                .await?;
+
+            return Ok(ChatResponse {
+                ok: true,
+                mode: "chat_home_context".to_string(),
+                message: response,
+                data: serde_json::to_value(result)
+                    .map_err(|e| AppError::Internal(e.to_string()))?,
+            });
+        }
+
+        let system = r#"
+    You are Local Operator, a local assistant running on the user's server.
+    Be concise, direct, and practical.
+    Do not claim access to Home Assistant unless home context was included.
+    "#;
+
+        let response = llm.ask(system, message).await?;
+
+        Ok(ChatResponse {
+            ok: true,
+            mode: "chat".to_string(),
+            message: response,
+            data: json!({}),
+        })
+}
     pub async fn run_command(
         &self,
         input: &str,

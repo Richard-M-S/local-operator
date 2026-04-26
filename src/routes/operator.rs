@@ -5,8 +5,22 @@ use serde_json::Value;
 use crate::{
     app_state::AppState,
     error::AppError,
-    models::api::{CommandRequest, CommandResponse, ToolExecuteRequest},
+    models::api::{ChatRequest, ChatResponse, CommandRequest, CommandResponse, ToolExecuteRequest},
 };
+
+pub async fn chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, AppError> {
+    let include_home = req.include_home.unwrap_or(true);
+
+    let result = state
+        .operator
+        .run_chat(&req.message, include_home)
+        .await?;
+
+    Ok(Json(result))
+}
 
 pub async fn command(
     State(state): State<AppState>,

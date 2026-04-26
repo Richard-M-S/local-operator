@@ -15,6 +15,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/api/status", get(status::status))
         .route("/api/operator/command", post(operator::command))
+        .route("/api/operator/chat", post(operator::chat))
         .route("/api/tools/execute", post(operator::execute_tool))
         .route("/api/audit/recent", get(audit::recent))
         .with_state(state)
