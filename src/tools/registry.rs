@@ -13,9 +13,7 @@ use crate::{
 
 use super::{
     docker::DockerListContainersTool,
-    home_assistant::{
-        HaGetEntityTool, HaOverviewTool, HaSearchTool, HaStatesTool, HaSummaryTool,
-    },
+    home_assistant::{HaGetEntityTool, HaOverviewTool, HaSearchTool, HaStatesTool, HaSummaryTool},
     system::SystemStatusTool,
 };
 
@@ -49,7 +47,9 @@ impl ToolRegistry {
 
             registry.register(HaSummaryTool::new(client.clone())).await;
             registry.register(HaStatesTool::new(client.clone())).await;
-            registry.register(HaGetEntityTool::new(client.clone())).await;
+            registry
+                .register(HaGetEntityTool::new(client.clone()))
+                .await;
             registry.register(HaSearchTool::new(client.clone())).await;
             registry.register(HaOverviewTool::new(client)).await;
         }

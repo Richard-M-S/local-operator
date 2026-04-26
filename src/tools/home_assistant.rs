@@ -28,11 +28,7 @@ fn summarize_entity(raw: &Value) -> Option<HaEntitySummary> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let domain = entity_id
-        .split('.')
-        .next()
-        .unwrap_or("unknown")
-        .to_string();
+    let domain = entity_id.split('.').next().unwrap_or("unknown").to_string();
 
     Some(HaEntitySummary {
         entity_id,
@@ -51,11 +47,7 @@ fn state_array(raw: &Value) -> Vec<HaEntitySummary> {
 }
 
 fn is_problem_entity(entity: &HaEntitySummary) -> bool {
-    let friendly = entity
-        .friendly_name
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
+    let friendly = friendly_or_id(entity).to_lowercase();
 
     let device_class = entity
         .attributes
@@ -64,13 +56,68 @@ fn is_problem_entity(entity: &HaEntitySummary) -> bool {
         .unwrap_or("")
         .to_lowercase();
 
+    // Do not treat enabled automations/scripts as active problems.
+    if entity.domain == "automation" || entity.domain == "script" {
+        return false;
+    }
+
     entity.state == "on"
         && (device_class == "problem"
             || friendly.contains("jammed")
             || friendly.contains("over-current")
-            || friendly.contains("disabled")
-            || friendly.contains("alert")
             || friendly.contains("error"))
+}
+
+fn is_door_entity(entity: &HaEntitySummary) -> bool {
+    let friendly = friendly_or_id(entity).to_lowercase();
+
+    let device_class = entity
+        .attributes
+        .get("device_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if entity.domain != "binary_sensor" {
+        return false;
+    }
+
+    if friendly.contains("jammed")
+        || friendly.contains("keypad")
+        || friendly.contains("disabled")
+        || friendly.contains("alert")
+        || friendly.contains("battery")
+    {
+        return false;
+    }
+
+    device_class == "door" || entity.entity_id == "binary_sensor.front_door"
+}
+
+fn interpret_binary_door_state(entity: &HaEntitySummary) -> String {
+    let friendly = friendly_or_id(entity).to_lowercase();
+
+    if friendly.contains("is closed") {
+        return match entity.state.as_str() {
+            "on" => "closed".to_string(),
+            "off" => "open".to_string(),
+            other => other.to_string(),
+        };
+    }
+
+    if friendly.contains("is open") || friendly.contains("sensor") {
+        return match entity.state.as_str() {
+            "on" => "open".to_string(),
+            "off" => "closed".to_string(),
+            other => other.to_string(),
+        };
+    }
+
+    match entity.state.as_str() {
+        "on" => "open".to_string(),
+        "off" => "closed".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn friendly_or_id(entity: &HaEntitySummary) -> String {
@@ -272,31 +319,13 @@ impl Tool for HaOverviewTool {
 
         let doors: Vec<Value> = entities
             .iter()
-            .filter(|e| {
-                e.domain == "binary_sensor"
-                    && (
-                        e.attributes
-                            .get("device_class")
-                            .and_then(|v| v.as_str())
-                            == Some("door")
-                        || e.entity_id.to_lowercase().contains("door")
-                        || friendly_or_id(e).to_lowercase().contains("door")
-                    )
-            })
+            .filter(|e| is_door_entity(e))
             .map(|e| {
-                let interpreted = if e.state == "on" {
-                    "open"
-                } else if e.state == "off" {
-                    "closed"
-                } else {
-                    e.state.as_str()
-                };
-
                 json!({
                     "entity_id": e.entity_id,
                     "name": friendly_or_id(e),
                     "state": e.state,
-                    "interpreted": interpreted
+                    "interpreted": interpret_binary_door_state(e)
                 })
             })
             .collect();
@@ -347,12 +376,10 @@ impl Tool for HaOverviewTool {
             .iter()
             .filter(|e| {
                 e.domain == "switch"
-                    && (
-                        e.entity_id.to_lowercase().contains("washer")
+                    && (e.entity_id.to_lowercase().contains("washer")
                         || e.entity_id.to_lowercase().contains("dryer")
                         || friendly_or_id(e).to_lowercase().contains("washer")
-                        || friendly_or_id(e).to_lowercase().contains("dryer")
-                    )
+                        || friendly_or_id(e).to_lowercase().contains("dryer"))
             })
             .map(|e| {
                 json!({

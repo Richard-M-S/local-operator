@@ -35,7 +35,8 @@ impl LlmClient {
             ]
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(url)
             .json(&body)
             .send()
@@ -43,11 +44,15 @@ impl LlmClient {
             .map_err(|e| AppError::Internal(format!("LLM request failed: {e}")))?;
 
         let status = resp.status();
-        let value: Value = resp.json().await
+        let value: Value = resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("LLM response parse failed: {e}")))?;
 
         if !status.is_success() {
-            return Err(AppError::Internal(format!("LLM returned {status}: {value}")));
+            return Err(AppError::Internal(format!(
+                "LLM returned {status}: {value}"
+            )));
         }
 
         let content = value

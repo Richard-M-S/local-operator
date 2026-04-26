@@ -31,12 +31,8 @@ impl AppState {
             None
         };
 
-        let operator = OperatorService::new(
-            tools.clone(),
-            policy.clone(),
-            audit.clone(),
-            llm.clone(),
-        );
+        let operator =
+            OperatorService::new(tools.clone(), policy.clone(), audit.clone(), llm.clone());
 
         Ok(Self {
             config,

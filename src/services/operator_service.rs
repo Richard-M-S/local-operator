@@ -2,9 +2,9 @@ use serde_json::json;
 
 use crate::{
     error::AppError,
+    models::api::{ChatResponse, CommandResponse},
     services::llm_service::LlmService,
     tools::registry::ToolRegistry,
-    models::api::{ChatResponse, CommandResponse},
 };
 
 use super::{audit_service::AuditService, policy_engine::PolicyEngine};
@@ -51,9 +51,7 @@ impl OperatorService {
             let result = self.tools.execute(tool_name, json!({})).await?;
             let _ = self.audit.record_tool_call(tool_name, true).await;
 
-            let response = llm
-                .summarize_home_overview(message, &result.output)
-                .await?;
+            let response = llm.summarize_home_overview(message, &result.output).await?;
 
             return Ok(ChatResponse {
                 ok: true,
@@ -78,7 +76,7 @@ impl OperatorService {
             message: response,
             data: json!({}),
         })
-}
+    }
     pub async fn run_command(
         &self,
         input: &str,
@@ -145,9 +143,7 @@ impl OperatorService {
             .as_ref()
             .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
 
-        let message = llm
-            .summarize_home_overview(input, &result.output)
-            .await?;
+        let message = llm.summarize_home_overview(input, &result.output).await?;
 
         Ok(CommandResponse {
             ok: true,

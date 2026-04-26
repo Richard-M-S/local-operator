@@ -14,10 +14,7 @@ pub async fn chat(
 ) -> Result<Json<ChatResponse>, AppError> {
     let include_home = req.include_home.unwrap_or(true);
 
-    let result = state
-        .operator
-        .run_chat(&req.message, include_home)
-        .await?;
+    let result = state.operator.run_chat(&req.message, include_home).await?;
 
     Ok(Json(result))
 }
