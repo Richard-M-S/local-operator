@@ -24,44 +24,47 @@ impl LlmClient {
     }
 
     pub async fn chat(&self, system: &str, user: &str) -> Result<String, AppError> {
-        let url = format!("{}/api/chat", self.base_url);
-
-        let body = json!({
-            "model": self.model,
-            "stream": false,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": user }
-            ]
-        });
-
-        let resp = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("LLM request failed: {e}")))?;
-
-        let status = resp.status();
-        let value: Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!("LLM response parse failed: {e}")))?;
-
-        if !status.is_success() {
-            return Err(AppError::Internal(format!(
-                "LLM returned {status}: {value}"
-            )));
-        }
-
-        let content = value
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        Ok(content)
+    self.chat_with_model(&self.model, system, user).await
     }
+
+    pub async fn chat_with_model(
+    &self,
+    model: &str,
+    system: &str,
+    user: &str,
+) -> Result<String, AppError> {
+    let url = format!("{}/api/chat", self.base_url);
+
+    let body = json!({
+        "model": model,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ]
+    });
+
+    let resp = self.client
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("LLM request failed: {e}")))?;
+
+    let status = resp.status();
+    let value: Value = resp.json()
+        .await
+        .map_err(|e| AppError::Internal(format!("LLM response parse failed: {e}")))?;
+
+    if !status.is_success() {
+        return Err(AppError::Internal(format!("LLM returned {status}: {value}")));
+    }
+
+    Ok(value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string())
+}
 }

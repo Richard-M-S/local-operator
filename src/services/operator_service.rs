@@ -5,6 +5,7 @@ use crate::{
     models::api::{ChatResponse, CommandResponse},
     services::llm_service::LlmService,
     tools::registry::ToolRegistry,
+    services::llm_router::LlmRouter,
 };
 
 use super::{audit_service::AuditService, policy_engine::PolicyEngine};
@@ -15,6 +16,7 @@ pub struct OperatorService {
     policy: PolicyEngine,
     audit: AuditService,
     llm: Option<LlmService>,
+    llm_router: LlmRouter,
 }
 
 impl OperatorService {
@@ -23,14 +25,17 @@ impl OperatorService {
         policy: PolicyEngine,
         audit: AuditService,
         llm: Option<LlmService>,
+        llm_router: LlmRouter,
     ) -> Self {
         Self {
             tools,
             policy,
             audit,
             llm,
+            llm_router,
         }
     }
+
     pub async fn run_chat(
         &self,
         message: &str,
@@ -41,7 +46,10 @@ impl OperatorService {
             .as_ref()
             .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
 
-        if include_home {
+        let decision = self.llm_router.route(message);
+        let use_home_context = include_home && decision.needs_home_context;
+
+        if use_home_context {
             let tool_name = "ha.get_overview";
 
             let descriptor = self.tools.describe(tool_name).await?;
@@ -51,14 +59,22 @@ impl OperatorService {
             let result = self.tools.execute(tool_name, json!({})).await?;
             let _ = self.audit.record_tool_call(tool_name, true).await;
 
-            let response = llm.summarize_home_overview(message, &result.output).await?;
+            let response = llm
+                .summarize_home_overview_with_model(
+                    &decision.model,
+                    message,
+                    &result.output,
+                )
+                .await?;
 
             return Ok(ChatResponse {
                 ok: true,
-                mode: "chat_home_context".to_string(),
+                mode: format!("chat_home_context::{:?}", decision.route),
                 message: response,
-                data: serde_json::to_value(result)
-                    .map_err(|e| AppError::Internal(e.to_string()))?,
+                data: json!({
+                    "route_decision": decision,
+                    "home": result
+                }),
             });
         }
 
@@ -68,15 +84,20 @@ impl OperatorService {
     Do not claim access to Home Assistant unless home context was included.
     "#;
 
-        let response = llm.ask(system, message).await?;
+        let response = llm
+            .ask_model(&decision.model, system, message)
+            .await?;
 
         Ok(ChatResponse {
             ok: true,
-            mode: "chat".to_string(),
+            mode: format!("chat::{:?}", decision.route),
             message: response,
-            data: json!({}),
+            data: json!({
+                "route_decision": decision
+            }),
         })
     }
+
     pub async fn run_command(
         &self,
         input: &str,
@@ -143,7 +164,11 @@ impl OperatorService {
             .as_ref()
             .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
 
-        let message = llm.summarize_home_overview(input, &result.output).await?;
+        let decision = self.llm_router.route(input);
+
+        let message = llm
+            .summarize_home_overview_with_model(&decision.model, input, &result.output)
+            .await?;
 
         Ok(CommandResponse {
             ok: true,

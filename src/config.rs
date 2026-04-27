@@ -8,6 +8,15 @@ pub struct AppConfig {
     pub homeassistant: HomeAssistantConfig,
     pub policy: PolicyConfig,
     pub llm: LlmConfig,
+    pub llm_router: LlmRouterConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmRouterConfig {
+    pub fast_model: String,
+    pub default_model: String,
+    pub coder_model: String,
+    pub deep_model: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -24,4 +24,10 @@ enabled = true
 provider = "ollama"
 base_url = "http://localhost:11434"
 model = "qwen2.5:14b"
-timeout_seconds = 60
+timeout_seconds = 120
+
+[llm_router]
+fast_model = "qwen2.5:7b"
+default_model = "qwen2.5:14b"
+coder_model = "qwen2.5-coder:14b"
+deep_model = "qwen2.5:32b"

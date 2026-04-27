@@ -1,6 +1,23 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LlmRoute {
+    Fast,
+    Default,
+    Coder,
+    Deep,
+    Escalate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRouteDecision {
+    pub route: LlmRoute,
+    pub model: String,
+    pub needs_home_context: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmChatMessage {
     pub role: String,
     pub content: String,
