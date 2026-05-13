@@ -28,8 +28,8 @@ impl OpTaskRunner {
                 let message = format!("unsupported task type: {}", task.task_type);
                 run.status = OpTaskRunStatus::Failed;
                 run.completed_at = Some(Utc::now());
-                run.summary = Some(message.clone());
-                return Err(anyhow!(message));
+                run.summary = Some(message);
+                return Ok(run);
             }
         }
 

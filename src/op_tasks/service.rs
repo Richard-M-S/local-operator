@@ -100,12 +100,9 @@ impl OpTaskService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        self.repo
-            .update_task_run_status(
-                executed_run.id,
-                executed_run.status,
-                executed_run.completed_at,
-            )
+        let executed_run = self
+            .repo
+            .update_task_run(executed_run)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 

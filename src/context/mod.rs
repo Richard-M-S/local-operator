@@ -2,4 +2,5 @@ pub mod models;
 pub mod repository;
 pub mod service;
 
-// pub use service::ContextService;
+pub use repository::ContextRepository;
+pub use service::ContextService;

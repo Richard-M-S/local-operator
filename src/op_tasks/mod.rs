@@ -5,4 +5,4 @@ pub mod service;
 
 pub use repository::OpTaskRepository;
 pub use runner::OpTaskRunner;
-// pub use service::OpTaskService;
+pub use service::OpTaskService;

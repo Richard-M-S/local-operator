@@ -1,5 +1,8 @@
 use crate::adapters::llm::LlmClient;
 use crate::config::AppConfig;
+use crate::context::{ContextRepository, ContextService};
+use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService};
+use crate::readers::ReaderService;
 use crate::services::{
     audit_service::AuditService, llm_router::LlmRouter, llm_service::LlmService,
     operator_service::OperatorService, policy_engine::PolicyEngine,
@@ -17,6 +20,9 @@ pub struct AppState {
     pub llm: Option<LlmService>,
     pub llm_router: LlmRouter,
     pub operator: OperatorService,
+    pub op_tasks: OpTaskService,
+    pub readers: ReaderService,
+    pub context: ContextService,
 }
 
 impl AppState {
@@ -42,6 +48,15 @@ impl AppState {
             llm_router.clone(),
         );
 
+        let op_task_repo = OpTaskRepository::new(db.clone());
+        let op_task_runner = OpTaskRunner::new(tools.clone(), llm.clone());
+        let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
+
+        let readers = ReaderService::new();
+
+        let context_repo = ContextRepository::new(db.clone());
+        let context = ContextService::new(context_repo);
+
         Ok(Self {
             config,
             db,
@@ -51,6 +66,9 @@ impl AppState {
             llm,
             llm_router,
             operator,
+            op_tasks,
+            readers,
+            context,
         })
     }
 }

@@ -121,27 +121,31 @@ impl OpTaskRepository {
         Ok(run)
     }
 
-    pub async fn update_task_run_status(
-        &self,
-        run_id: Uuid,
-        status: OpTaskRunStatus,
-        completed_at: Option<DateTime<Utc>>,
-    ) -> anyhow::Result<()> {
+    pub async fn update_task_run(&self, run: OpTaskRun) -> anyhow::Result<OpTaskRun> {
+        let work_items_json = serde_json::to_string(&run.work_items)?;
+
         sqlx::query(
             r#"
             UPDATE op_task_runs
-            SET status = ?1,
-                completed_at = ?2
-            WHERE id = ?3
+            SET
+                status = ?1,
+                started_at = ?2,
+                completed_at = ?3,
+                work_items_json = ?4,
+                summary = ?5
+            WHERE id = ?6
             "#,
         )
-        .bind(status.as_str())
-        .bind(completed_at.map(|dt| dt.to_rfc3339()))
-        .bind(run_id.to_string())
+        .bind(run.status.as_str())
+        .bind(run.started_at.map(|dt| dt.to_rfc3339()))
+        .bind(run.completed_at.map(|dt| dt.to_rfc3339()))
+        .bind(work_items_json)
+        .bind(&run.summary)
+        .bind(run.id.to_string())
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(run)
     }
 
     pub async fn save_artifact(&self, artifact: TaskArtifact) -> anyhow::Result<()> {
