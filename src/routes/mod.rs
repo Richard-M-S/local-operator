@@ -1,4 +1,5 @@
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
@@ -6,14 +7,14 @@ use axum::{
 use crate::app_state::AppState;
 
 pub mod audit;
+pub mod auth;
 pub mod health;
 pub mod openai_compat;
 pub mod operator;
 pub mod status;
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health::health))
+    let protected_routes = Router::new()
         .route("/api/status", get(status::status))
         .route("/api/operator/command", post(operator::command))
         .route("/api/operator/chat", post(operator::chat))
@@ -24,5 +25,13 @@ pub fn router(state: AppState) -> Router {
             "/v1/chat/completions",
             post(openai_compat::chat_completions),
         )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_token,
+        ));
+
+    Router::new()
+        .route("/health", get(health::health))
+        .merge(protected_routes)
         .with_state(state)
 }

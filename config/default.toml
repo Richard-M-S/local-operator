@@ -1,6 +1,10 @@
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8080
+
+[auth]
+enabled = false
+token_env = "OPERATOR_API_TOKEN"
 
 [database]
 url = "sqlite:///opt/local-operator/data/operator.db"
@@ -15,7 +19,7 @@ token_env = "HA_TOKEN"
 timeout_seconds = 10
 
 [policy]
-allow_tier1_without_confirm = true
+allow_tier1_without_confirm = false
 allow_tier2_without_confirm = false
 block_tier3 = true
 

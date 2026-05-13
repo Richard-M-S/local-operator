@@ -1,7 +1,7 @@
 use crate::op_tasks::models::{OpTask, OpTaskRun, OpTaskRunStatus, OpWorkItem, TaskArtifact};
 use crate::services::llm_service::LlmService;
 use crate::tools::registry::ToolRegistry;
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
@@ -10,11 +10,16 @@ use uuid::Uuid;
 pub struct OpTaskRunner {
     tools: ToolRegistry,
     llm: Option<LlmService>,
+    summary_model: String,
 }
 
 impl OpTaskRunner {
-    pub fn new(tools: ToolRegistry, llm: Option<LlmService>) -> Self {
-        Self { tools, llm }
+    pub fn new(tools: ToolRegistry, llm: Option<LlmService>, summary_model: String) -> Self {
+        Self {
+            tools,
+            llm,
+            summary_model,
+        }
     }
 
     pub async fn execute(&self, task: OpTask, mut run: OpTaskRun) -> anyhow::Result<OpTaskRun> {
@@ -73,7 +78,7 @@ impl OpTaskRunner {
 
             match llm
                 .ask_model(
-                    "gpt-3.5-mini",
+                    &self.summary_model,
                     "You are a system status summarization assistant.",
                     &prompt,
                 )

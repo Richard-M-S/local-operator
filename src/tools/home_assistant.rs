@@ -178,7 +178,6 @@ impl Tool for HaStatesTool {
     async fn execute(&self, _: Value) -> Result<Value, AppError> {
         let raw = self.client.get_states().await?;
         let entities = state_array(&raw);
-        let entities = state_array(&raw);
 
         Ok(json!({
             "count": entities.len(),
@@ -440,32 +439,10 @@ impl Tool for HaEnergyHvacSnapshotTool {
     }
 
     async fn execute(&self, _args: Value) -> Result<Value, AppError> {
-        let token = std::env::var(&self.token_env)
-            .map_err(|_| AppError::Internal(format!("missing env var {}", self.token_env)))?;
-
-        let url = format!("{}/api/states", self.base_url.trim_end_matches('/'));
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("home assistant request failed: {e}")))?;
-
-        let status = resp.status();
-
-        if !status.is_success() {
-            return Err(AppError::Internal(format!(
-                "home assistant returned status {}",
-                status
-            )));
-        }
-
-        let states: Vec<Value> = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!("unable to parse HA states: {e}")))?;
+        let raw = self.client.get_states().await?;
+        let states = raw
+            .as_array()
+            .ok_or_else(|| AppError::Internal("home assistant states was not an array".into()))?;
 
         fn entity_id(v: &Value) -> &str {
             v.get("entity_id").and_then(Value::as_str).unwrap_or("")
@@ -530,7 +507,7 @@ impl Tool for HaEnergyHvacSnapshotTool {
         let mut energy_price = Vec::new();
         let mut helpers = Vec::new();
 
-        for state in &states {
+        for state in states {
             let id = entity_id(state);
             let dom = domain(id);
             let name_l = friendly_name(state).to_lowercase();

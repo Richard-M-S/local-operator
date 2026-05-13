@@ -54,7 +54,7 @@ impl ToolRegistry {
                 .register(HaGetEntityTool::new(client.clone()))
                 .await;
             registry.register(HaSearchTool::new(client.clone())).await;
-            registry.register(HaOverviewTool::new(client)).await;
+            registry.register(HaOverviewTool::new(client.clone())).await;
             registry
                 .register(HaEnergyHvacSnapshotTool::new(client.clone()))
                 .await;

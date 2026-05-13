@@ -52,7 +52,6 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, AppError> {
-    // get last user message
     let user_message = req
         .messages
         .iter()
@@ -61,7 +60,32 @@ pub async fn chat_completions(
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
-    let result = state.operator.run_chat(&user_message, true).await?;
+    let content = if req.model == "local-operator-home" {
+        state.operator.run_chat(&user_message, true).await?.message
+    } else {
+        let llm = state
+            .llm
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
+
+        let system = req
+            .messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let transcript = req
+            .messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        llm.ask_model(&req.model, &system, &transcript).await?
+    };
 
     Ok(Json(ChatCompletionResponse {
         id: "chatcmpl-local".to_string(),
@@ -70,7 +94,7 @@ pub async fn chat_completions(
             index: 0,
             message: MessageOut {
                 role: "assistant".to_string(),
-                content: result.message,
+                content,
             },
         }],
     }))

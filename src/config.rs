@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub policy: PolicyConfig,
     pub llm: LlmConfig,
     pub llm_router: LlmRouterConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -17,6 +19,21 @@ pub struct LlmRouterConfig {
     pub default_model: String,
     pub coder_model: String,
     pub deep_model: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthConfig {
+    pub enabled: bool,
+    pub token_env: String,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token_env: "OPERATOR_API_TOKEN".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

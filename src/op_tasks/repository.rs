@@ -1,5 +1,4 @@
 use crate::op_tasks::models::{OpTask, OpTaskRun, OpTaskRunStatus, OpTaskStatus, TaskArtifact};
-use chrono::{DateTime, Utc};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 

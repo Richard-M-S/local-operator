@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::load()?;
     let db = SqlitePool::connect(&config.database.url).await?;
+    sqlx::migrate!("./migrations").run(&db).await?;
     let state = AppState::new(config.clone(), db).await?;
 
     let app = routes::router(state);
