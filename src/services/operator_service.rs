@@ -3,9 +3,9 @@ use serde_json::json;
 use crate::{
     error::AppError,
     models::api::{ChatResponse, CommandResponse},
+    services::llm_router::LlmRouter,
     services::llm_service::LlmService,
     tools::registry::ToolRegistry,
-    services::llm_router::LlmRouter,
 };
 
 use super::{audit_service::AuditService, policy_engine::PolicyEngine};
@@ -60,11 +60,7 @@ impl OperatorService {
             let _ = self.audit.record_tool_call(tool_name, true).await;
 
             let response = llm
-                .summarize_home_overview_with_model(
-                    &decision.model,
-                    message,
-                    &result.output,
-                )
+                .summarize_home_overview_with_model(&decision.model, message, &result.output)
                 .await?;
 
             return Ok(ChatResponse {
@@ -84,9 +80,7 @@ impl OperatorService {
     Do not claim access to Home Assistant unless home context was included.
     "#;
 
-        let response = llm
-            .ask_model(&decision.model, system, message)
-            .await?;
+        let response = llm.ask_model(&decision.model, system, message).await?;
 
         Ok(ChatResponse {
             ok: true,

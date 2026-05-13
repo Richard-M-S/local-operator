@@ -417,14 +417,14 @@ impl Tool for HaOverviewTool {
         }))
     }
 }
+
 pub struct HaEnergyHvacSnapshotTool {
-    base_url: String,
-    token_env: String,
+    client: HomeAssistantClient,
 }
 
 impl HaEnergyHvacSnapshotTool {
-    pub fn new(base_url: String, token_env: String) -> Self {
-        Self { base_url, token_env }
+    pub fn new(client: HomeAssistantClient) -> Self {
+        Self { client }
     }
 }
 
@@ -582,13 +582,22 @@ impl Tool for HaEnergyHvacSnapshotTool {
                     }
                 }
                 "sensor" => {
-                    if dc == "temperature" || id_l.contains("temp") || name_l.contains("temperature") {
+                    if dc == "temperature"
+                        || id_l.contains("temp")
+                        || name_l.contains("temperature")
+                    {
                         temperature_sensors.push(compact_entity(state));
                     } else if dc == "humidity" || id_l.contains("humidity") {
                         humidity_sensors.push(compact_entity(state));
-                    } else if dc == "power" || id_l.contains("power") || unit(state).as_deref() == Some("W") {
+                    } else if dc == "power"
+                        || id_l.contains("power")
+                        || unit(state).as_deref() == Some("W")
+                    {
                         power.push(compact_entity(state));
-                    } else if dc == "energy" || id_l.contains("energy") || unit(state).as_deref() == Some("kWh") {
+                    } else if dc == "energy"
+                        || id_l.contains("energy")
+                        || unit(state).as_deref() == Some("kWh")
+                    {
                         energy.push(compact_entity(state));
                     } else if dc == "battery" || id_l.contains("battery") {
                         battery.push(compact_entity(state));
