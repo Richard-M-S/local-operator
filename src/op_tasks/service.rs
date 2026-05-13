@@ -41,11 +41,51 @@ impl OpTaskService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    pub async fn create_task(
+        &self,
+        task_type: String,
+        name: String,
+        description: Option<String>,
+        enabled: bool,
+    ) -> Result<OpTask, AppError> {
+        self.validate_task_input(&task_type, &name, &description)?;
+
+        let task = OpTask {
+            id: Uuid::new_v4(),
+            task_type: task_type.trim().to_string(),
+            name: name.trim().to_string(),
+            description,
+            status: if enabled {
+                OpTaskStatus::Active
+            } else {
+                OpTaskStatus::Paused
+            },
+            created_at: Utc::now(),
+            updated_at: None,
+        };
+
+        self.repo
+            .create_op_task(task)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
     pub async fn get_op_task(&self, task_id: Uuid) -> Result<Option<OpTask>, AppError> {
         self.repo
             .get_op_task(task_id)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    pub async fn list_tasks(&self) -> Result<Vec<OpTask>, AppError> {
+        self.repo
+            .list_op_tasks()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    pub async fn run_task(&self, task_id: Uuid) -> Result<OpTaskRun, AppError> {
+        self.start_task_run(task_id, vec![]).await
     }
 
     pub async fn start_task_run(
@@ -94,11 +134,22 @@ impl OpTaskService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let executed_run = self
-            .runner
-            .execute(task.clone(), run)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let executed_run = match self.runner.execute(task.clone(), run.clone()).await {
+            Ok(executed_run) => executed_run,
+            Err(err) => {
+                let mut failed_run = run;
+                failed_run.status = OpTaskRunStatus::Failed;
+                failed_run.completed_at = Some(Utc::now());
+                failed_run.summary = Some(err.to_string());
+
+                self.repo
+                    .update_task_run(failed_run.clone())
+                    .await
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+                return Ok(failed_run);
+            }
+        };
 
         let executed_run = self
             .repo
