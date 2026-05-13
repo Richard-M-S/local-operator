@@ -40,9 +40,12 @@ impl OpTaskRunner {
 
     async fn run_status_report(&self, run: &mut OpTaskRun) -> anyhow::Result<()> {
         let now = Utc::now();
-        let item = self.ensure_work_item(run, "status_check", "Collect system status");
-        item.status = OpTaskRunStatus::Running;
-        item.started_at = Some(now);
+        let work_item_id = {
+            let item = self.ensure_work_item(run, "status_check", "Collect system status");
+            item.status = OpTaskRunStatus::Running;
+            item.started_at = Some(now);
+            item.id
+        };
 
         let result = self
             .tools
@@ -50,8 +53,15 @@ impl OpTaskRunner {
             .await
             .context("failed to execute system.get_status tool")?;
 
-        item.status = OpTaskRunStatus::Succeeded;
-        item.completed_at = Some(Utc::now());
+        {
+            let item = run
+                .work_items
+                .iter_mut()
+                .find(|wi| wi.id == work_item_id)
+                .unwrap();
+            item.status = OpTaskRunStatus::Succeeded;
+            item.completed_at = Some(Utc::now());
+        }
 
         let mut summary = format!("System status collected by {}", result.tool);
         if let Some(llm) = &self.llm {
@@ -79,10 +89,11 @@ impl OpTaskRunner {
             }
         }
 
+        let run_id = run.id;
         run.artifacts.push(TaskArtifact {
             id: Uuid::new_v4(),
-            run_id: run.id,
-            work_item_id: Some(item.id),
+            run_id,
+            work_item_id: Some(work_item_id),
             name: "system_status_report".to_string(),
             artifact_type: "status_report".to_string(),
             location: None,
@@ -97,12 +108,12 @@ impl OpTaskRunner {
         Ok(())
     }
 
-    fn ensure_work_item(
+    fn ensure_work_item<'a>(
         &self,
-        run: &mut OpTaskRun,
+        run: &'a mut OpTaskRun,
         name: &str,
         description: &str,
-    ) -> &mut OpWorkItem {
+    ) -> &'a mut OpWorkItem {
         if run.work_items.is_empty() {
             run.work_items.push(OpWorkItem {
                 id: Uuid::new_v4(),

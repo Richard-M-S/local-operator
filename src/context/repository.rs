@@ -1,5 +1,4 @@
 use crate::context::models::{ContextKind, SavedContext};
-use chrono::{DateTime, Utc};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 

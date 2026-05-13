@@ -66,7 +66,7 @@ impl OpTaskService {
         }
 
         let run_id = Uuid::new_v4();
-        let mut prepared_items = work_items
+        let prepared_items = work_items
             .into_iter()
             .enumerate()
             .map(|(index, mut item)| {
