@@ -252,4 +252,20 @@ impl OpTaskService {
 
         Ok(())
     }
+    
+    pub async fn get_run(&self, run_id: Uuid) -> Result<OpTaskRun, AppError> {
+    self.repo
+        .get_task_run(run_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("Op Task run not found".to_string()))
+    }
+    
+    pub async fn list_runs_for_task(&self, task_id: Uuid) -> Result<Vec<OpTaskRun>, AppError> {
+        self.repo
+            .list_task_runs_for_task(task_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
 }

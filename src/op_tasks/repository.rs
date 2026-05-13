@@ -147,6 +147,66 @@ impl OpTaskRepository {
         Ok(run)
     }
 
+    pub async fn get_task_run(&self, run_id: Uuid) -> anyhow::Result<Option<OpTaskRun>> {
+        let row = sqlx::query_as::<_, OpTaskRunRow>(
+            r#"
+            SELECT
+                id,
+                task_id,
+                status,
+                started_at,
+                completed_at,
+                work_items_json,
+                summary
+            FROM op_task_runs
+            WHERE id = ?1
+            "#,
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let mut run: OpTaskRun = row.into();
+        run.artifacts = self.list_artifacts_for_run(run.id).await?;
+
+        Ok(Some(run))
+    }
+
+    pub async fn list_task_runs_for_task(&self, task_id: Uuid) -> anyhow::Result<Vec<OpTaskRun>> {
+        let rows = sqlx::query_as::<_, OpTaskRunRow>(
+            r#"
+            SELECT
+                id,
+                task_id,
+                status,
+                started_at,
+                completed_at,
+                work_items_json,
+                summary
+            FROM op_task_runs
+            WHERE task_id = ?1
+            ORDER BY started_at DESC
+            "#,
+        )
+        .bind(task_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut runs = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let mut run: OpTaskRun = row.into();
+            run.artifacts = self.list_artifacts_for_run(run.id).await?;
+            runs.push(run);
+        }
+
+        Ok(runs)
+    }
+
     pub async fn save_artifact(&self, artifact: TaskArtifact) -> anyhow::Result<()> {
         sqlx::query(
             r#"

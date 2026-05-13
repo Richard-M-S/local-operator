@@ -19,6 +19,16 @@ pub struct CreateOpTaskRequest {
     pub enabled: bool,
 }
 
+#[derive(Serialize)]
+pub struct RunResponse {
+    pub run: OpTaskRun,
+}
+
+#[derive(Serialize)]
+pub struct ListRunsResponse {
+    pub runs: Vec<OpTaskRun>,
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -48,4 +58,26 @@ pub async fn run(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let run = state.op_tasks.run_task(task_id).await?;
     Ok(Json(serde_json::json!({ "run": run })))
+}
+
+pub async fn get_run(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RunResponse>, AppError> {
+    let run = state.op_tasks
+        .get_run(id)
+        .await?;
+
+    Ok(Json(RunResponse { run }))
+}
+
+pub async fn list_runs(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ListRunsResponse>, AppError> {
+    let runs = state.op_tasks
+        .list_runs_for_task(id)
+        .await?;
+
+    Ok(Json(ListRunsResponse { runs }))
 }
