@@ -45,6 +45,7 @@ const FIT_FILTER_PRESETS = [
 
 const MAIN_TABS = [
   { label: "Operator", value: "operator" },
+  { label: "Daily Review", value: "review" },
   { label: "Tasks", value: "tasks" },
   { label: "Employment", value: "opportunities" },
   { label: "Artifacts", value: "artifacts" },
@@ -734,6 +735,12 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [showSetup, setShowSetup] = useState(() => {
+    const hasApiBase = !!readStoredSetting(STORAGE_KEYS.apiBase, "").trim();
+    const hasToken = !!readStoredSetting(STORAGE_KEYS.token, "").trim();
+    return !(hasApiBase && hasToken);
+  });
+  const [criteriaExpanded, setCriteriaExpanded] = useState(false);
 
   const filteredOpportunities = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1454,6 +1461,28 @@ export default function App() {
     setCoverLetterDirection("");
   }, [selectedOpportunity?.id]);
 
+  if (showSetup) {
+    return (
+      <SetupScreen
+        apiBase={apiBase}
+        onApiBaseChange={setApiBase}
+        token={token}
+        onTokenChange={setToken}
+        profiles={profiles}
+        selectedProfileId={selectedProfileId}
+        onProfileChange={setSelectedProfileId}
+        onCreateProfile={createProfile}
+        onContinue={() => {
+          loadProfiles();
+          setShowSetup(false);
+        }}
+        selectedProfile={selectedProfile}
+        actionLoading={actionLoading}
+        error={error}
+      />
+    );
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.shell}>
@@ -1467,51 +1496,20 @@ export default function App() {
           </div>
           <div style={styles.controls}>
             <div style={styles.row}>
-              <input style={styles.input} value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
+              <button
+                style={styles.buttonSecondary}
+                onClick={() => setShowSetup(true)}
+                title="Reconfigure API Base and Token"
+              >
+                ⚙ Setup
+              </button>
               <button style={styles.button} onClick={loadAll} disabled={loading}>
                 {loading ? "Loading…" : "Refresh"}
               </button>
             </div>
-            <input
-              style={styles.input}
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Bearer token, only if auth is enabled"
-              type="password"
-            />
+            <div style={styles.muted}>{selectedProfile?.display_name || "Default"}</div>
           </div>
         </header>
-
-        <section style={styles.profilePanel}>
-          <div>
-            <div style={styles.fieldLabel}>Active Profile</div>
-            <div style={styles.cardTitle}>{selectedProfile?.display_name || "Default"}</div>
-            <div style={styles.muted}>{selectedProfileId}</div>
-          </div>
-          <select
-            style={styles.input}
-            value={selectedProfileId}
-            onChange={(e) => setSelectedProfileId(e.target.value)}
-            title="Profile"
-          >
-            {profiles.length === 0 ? (
-              <option value={selectedProfileId}>{selectedProfile?.display_name || "Default"}</option>
-            ) : (
-              profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.display_name}
-                </option>
-              ))
-            )}
-          </select>
-          <button
-            style={styles.buttonSecondary}
-            onClick={createProfile}
-            disabled={actionLoading === "create-profile"}
-          >
-            New Profile
-          </button>
-        </section>
 
         <section style={styles.mainTabs}>
           {MAIN_TABS.map((tab) => (
@@ -1552,82 +1550,96 @@ export default function App() {
           </button>
         </section> : null}
 
-        {activeMainTab === "operator" ? <section style={styles.jobUrlPanel}>
-          <label style={styles.label} htmlFor="job-url-input">
-            Job URL
-          </label>
-          <input
-            id="job-url-input"
-            style={styles.input}
-            value={jobUrl}
-            onChange={(e) => setJobUrl(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") readJobUrl();
-            }}
-            placeholder="https://company.com/job/..."
-          />
-          <button
-            style={styles.buttonSecondary}
-            onClick={() => readJobUrl()}
-            disabled={actionLoading === "read-url" || actionLoading === "read-create-url"}
-          >
-            {actionLoading === "read-url" ? "Reading…" : "Read URL"}
-          </button>
-          <button
-            style={styles.button}
-            onClick={() => readJobUrl({ createOpportunity: true })}
-            disabled={actionLoading === "read-url" || actionLoading === "read-create-url"}
-          >
-            {actionLoading === "read-create-url" ? "Reading…" : "Read → Create Opportunity"}
-          </button>
-        </section> : null}
+        {activeMainTab === "review" ? (
+          <section>
+            <div style={styles.sectionTitle}>
+              <h2 style={styles.h2}>Today's Work</h2>
+              <span style={styles.muted}>Daily review</span>
+            </div>
+            <div style={styles.dashboardGrid}>
+              <Metric label="New Artifacts Today" value={todayStats.artifacts} />
+              <Metric label="New Opportunities Today" value={todayStats.opportunities} />
+              <Metric label="Needs Parse" value={todayStats.needsParse} />
+              <Metric label="Needs Score" value={todayStats.needsScore} />
+              <Metric label="High Fit" value={todayStats.highFit} />
+              <Metric label="Failed Runs" value={todayStats.failedRuns} />
+            </div>
 
-        {activeMainTab === "opportunities" ? <section style={styles.criteriaPanel}>
-          <div>
+            <div style={styles.sectionTitle}>
+              <h2 style={styles.h2}>Summary Metrics</h2>
+            </div>
+            <div style={styles.grid4}>
+              <Metric label="Opportunities" value={opportunities.length} />
+              <Metric label="Artifacts" value={artifacts.length} />
+              <Metric label="Selected Opportunity" value={selectedOpportunity?.title || "—"} compact />
+              <Metric label="Selected Artifact" value={selectedArtifact?.name || "—"} compact />
+            </div>
+          </section>
+        ) : null}
+
+        {activeMainTab === "opportunities" ? (
+          <section style={styles.jobUrlPanel}>
+            <label style={styles.label} htmlFor="job-url-input">
+              Job URL
+            </label>
+            <input
+              id="job-url-input"
+              style={styles.input}
+              value={jobUrl}
+              onChange={(e) => setJobUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") readJobUrl();
+              }}
+              placeholder="https://company.com/job/..."
+            />
+            <button
+              style={styles.buttonSecondary}
+              onClick={() => readJobUrl()}
+              disabled={actionLoading === "read-url" || actionLoading === "read-create-url"}
+            >
+              {actionLoading === "read-url" ? "Reading…" : "Read URL"}
+            </button>
+            <button
+              style={styles.button}
+              onClick={() => readJobUrl({ createOpportunity: true })}
+              disabled={actionLoading === "read-url" || actionLoading === "read-create-url"}
+            >
+              {actionLoading === "read-create-url" ? "Reading…" : "Read → Create Opportunity"}
+            </button>
+          </section>
+        ) : null}
+
+        {activeMainTab === "opportunities" ? (
+          <section style={styles.card}>
             <div style={styles.sectionTitle}>
               <h2 style={styles.h2}>Profile Criteria</h2>
+              <button
+                style={{...styles.tab, cursor: "pointer"}}
+                onClick={() => setCriteriaExpanded(!criteriaExpanded)}
+              >
+                {criteriaExpanded ? "Hide" : "Show"}
+              </button>
             </div>
-            <div style={styles.muted}>{selectedProfile?.display_name || "Default"}</div>
-          </div>
-          <textarea
-            style={styles.textarea}
-            value={criteriaDraft}
-            onChange={(e) => setCriteriaDraft(e.target.value)}
-            placeholder="Target roles, must-haves, dealbreakers, location, salary, work style, technologies..."
-          />
-          <button
-            style={styles.button}
-            onClick={saveProfileCriteria}
-            disabled={!criteriaChanged || actionLoading === "save-criteria"}
-          >
-            {actionLoading === "save-criteria" ? "Saving…" : "Save Criteria"}
-          </button>
-        </section> : null}
-
-        <section>
-          <div style={styles.sectionTitle}>
-            <h2 style={styles.h2}>Today’s Work</h2>
-            <span style={styles.muted}>Daily review</span>
-          </div>
-          <div style={styles.dashboardGrid}>
-            <Metric label="New Artifacts Today" value={todayStats.artifacts} />
-            <Metric label="New Opportunities Today" value={todayStats.opportunities} />
-            <Metric label="Needs Parse" value={todayStats.needsParse} />
-            <Metric label="Needs Score" value={todayStats.needsScore} />
-            <Metric label="High Fit" value={todayStats.highFit} />
-            <Metric label="Failed Runs" value={todayStats.failedRuns} />
-          </div>
-        </section>
-
-        <section style={styles.grid4}>
-          <Metric label="Opportunities" value={opportunities.length} />
-          <Metric label="Artifacts" value={artifacts.length} />
-          <Metric label="Selected Opportunity" value={selectedOpportunity?.title || "—"} compact />
-          <Metric label="Selected Artifact" value={selectedArtifact?.name || "—"} compact />
-        </section>
-
-        {error ? <div style={{ ...styles.message, ...styles.error }}>{error}</div> : null}
-        {notice ? <div style={{ ...styles.message, ...styles.notice }}>{notice}</div> : null}
+            {criteriaExpanded ? (
+              <>
+                <div style={styles.muted}>{selectedProfile?.display_name || "Default"}</div>
+                <textarea
+                  style={styles.textarea}
+                  value={criteriaDraft}
+                  onChange={(e) => setCriteriaDraft(e.target.value)}
+                  placeholder="Target roles, must-haves, dealbreakers, location, salary, work style, technologies..."
+                />
+                <button
+                  style={styles.button}
+                  onClick={saveProfileCriteria}
+                  disabled={!criteriaChanged || actionLoading === "save-criteria"}
+                >
+                  {actionLoading === "save-criteria" ? "Saving…" : "Save Criteria"}
+                </button>
+              </>
+            ) : null}
+          </section>
+        ) : null}
 
         {["opportunities", "artifacts"].includes(activeMainTab) ? <section style={styles.filterBar}>
           <input
@@ -1810,6 +1822,115 @@ export default function App() {
             </section>
           </>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SetupScreen({
+  apiBase,
+  onApiBaseChange,
+  token,
+  onTokenChange,
+  profiles,
+  selectedProfileId,
+  onProfileChange,
+  onCreateProfile,
+  onContinue,
+  selectedProfile,
+  actionLoading,
+  error,
+}) {
+  const hasValidConfig = !!apiBase?.trim() && !!token?.trim();
+
+  return (
+    <div style={styles.page}>
+      <div style={{...styles.shell, maxWidth: 600, display: "flex", flexDirection: "column", justifyContent: "center", minHeight: "100vh"}}>
+        <div style={{...styles.header, gridTemplateColumns: "1fr", gap: 24}}>
+          <div>
+            <div style={styles.eyebrow}>Local Operator Console</div>
+            <h1 style={styles.title}>Setup</h1>
+            <p style={styles.subtitle}>
+              Configure your API endpoint and authentication to get started.
+            </p>
+          </div>
+        </div>
+
+        <section style={styles.card}>
+          <div style={styles.sectionTitle}>
+            <h2 style={styles.h2}>API Configuration</h2>
+          </div>
+
+          <div style={{marginBottom: 16}}>
+            <label style={styles.fieldLabel}>API Base URL</label>
+            <input
+              style={styles.input}
+              value={apiBase}
+              onChange={(e) => onApiBaseChange(e.target.value)}
+              placeholder="http://localhost:8080"
+            />
+            <div style={styles.muted}>Full URL to your Local Operator API server</div>
+          </div>
+
+          <div style={{marginBottom: 16}}>
+            <label style={styles.fieldLabel}>Bearer Token</label>
+            <input
+              style={{...styles.input}}
+              type="password"
+              value={token}
+              onChange={(e) => onTokenChange(e.target.value)}
+              placeholder="Leave blank if auth is disabled"
+            />
+            <div style={styles.muted}>Optional authentication token</div>
+          </div>
+        </section>
+
+        <section style={styles.card}>
+          <div style={styles.sectionTitle}>
+            <h2 style={styles.h2}>Active Profile</h2>
+          </div>
+
+          <select
+            style={{...styles.input, marginBottom: 16}}
+            value={selectedProfileId}
+            onChange={(e) => onProfileChange(e.target.value)}
+            title="Profile"
+          >
+            {profiles.length === 0 ? (
+              <option value={selectedProfileId}>{selectedProfile?.display_name || "Default"}</option>
+            ) : (
+              profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.display_name}
+                </option>
+              ))
+            )}
+          </select>
+
+          <button
+            style={{...styles.buttonSecondary, width: "100%"}}
+            onClick={onCreateProfile}
+            disabled={actionLoading === "create-profile"}
+          >
+            {actionLoading === "create-profile" ? "Creating…" : "Create New Profile"}
+          </button>
+        </section>
+
+        {error ? <div style={{ ...styles.message, ...styles.error }}>{error}</div> : null}
+
+        <button
+          style={{...styles.button, width: "100%", padding: "14px 16px", fontSize: 16, fontWeight: 800}}
+          onClick={onContinue}
+          disabled={!hasValidConfig}
+        >
+          Continue to Console
+        </button>
+
+        <div style={{...styles.muted, textAlign: "center"}}>
+          {!apiBase?.trim() && "Enter API Base URL"}
+          {apiBase?.trim() && !token?.trim() && "Token is optional"}
+          {hasValidConfig && "Ready to continue"}
+        </div>
       </div>
     </div>
   );
