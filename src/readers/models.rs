@@ -29,6 +29,19 @@ pub struct ReadSourceResult {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SearchResultItem {
+    pub title: String,
+    pub url: String,
+    pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SearchResults {
+    pub query: String,
+    pub results: Vec<SearchResultItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct ReadableDocument {
     pub source_url: String,

@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(default)]
     pub include_home: Option<bool>,
+    #[serde(default)]
+    pub profile_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize)]

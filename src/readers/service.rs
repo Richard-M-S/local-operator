@@ -1,4 +1,6 @@
-use crate::readers::models::{ReadSourceRequest, ReadSourceResult, ReaderSourceType};
+use crate::readers::models::{
+    ReadSourceRequest, ReadSourceResult, ReaderSourceType, SearchResults,
+};
 use crate::readers::web_reader::WebReader;
 use anyhow::{anyhow, Result};
 
@@ -23,6 +25,10 @@ impl ReaderService {
         };
 
         self.read_source(request).await
+    }
+
+    pub async fn search_web(&self, query: String, limit: usize) -> Result<SearchResults> {
+        self.web_reader.search_web(query, limit).await
     }
 
     pub async fn read_source(&self, request: ReadSourceRequest) -> Result<ReadSourceResult> {

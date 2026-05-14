@@ -17,6 +17,7 @@ use crate::{
     domains::employment::repository::EmploymentRepository,
     error::AppError,
     op_tasks::service::OpTaskService,
+    services::llm_router::LlmRouter,
     services::llm_service::LlmService,
 };
 
@@ -25,6 +26,7 @@ pub struct EmploymentOpportunityService {
     pub repository: EmploymentRepository,
     op_tasks: OpTaskService,
     llm: Option<LlmService>,
+    llm_router: LlmRouter,
 }
 
 impl EmploymentOpportunityService {
@@ -32,11 +34,13 @@ impl EmploymentOpportunityService {
         repository: EmploymentRepository,
         op_tasks: OpTaskService,
         llm: Option<LlmService>,
+        llm_router: LlmRouter,
     ) -> Self {
         Self {
             repository,
             op_tasks,
             llm,
+            llm_router,
         }
     }
 
@@ -157,8 +161,9 @@ impl EmploymentOpportunityService {
             .llm
             .as_ref()
             .ok_or_else(|| AppError::Internal("LLM service not available".to_string()))?;
+        let model = self.llm_router.task_extraction_model();
         let parsed: serde_json::Value = llm_service
-            .parse_job_opportunity("qwen2.5:14b", description_text)
+            .parse_job_opportunity(&model, description_text)
             .await?;
 
         // Update opportunity with parsed data
@@ -219,8 +224,9 @@ impl EmploymentOpportunityService {
 
         let job_json = opportunity_scoring_json(&opportunity);
         let scored = if let Some(llm_service) = &self.llm {
+            let model = self.llm_router.task_reasoning_model();
             llm_service
-                .score_job_opportunity("qwen2.5:14b", &job_json, &criteria)
+                .score_job_opportunity(&model, &job_json, &criteria)
                 .await
                 .unwrap_or_else(|_| heuristic_score(&opportunity, &criteria))
         } else {
@@ -256,9 +262,10 @@ impl EmploymentOpportunityService {
         let opportunity_json = opportunity_scoring_json(opportunity);
 
         if let Some(llm_service) = &self.llm {
+            let model = self.llm_router.task_writing_model();
             return match llm_service
                 .generate_cover_letter(
-                    "qwen2.5:14b",
+                    &model,
                     &opportunity_json,
                     &criteria,
                     &profile_context,

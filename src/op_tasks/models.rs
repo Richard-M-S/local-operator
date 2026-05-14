@@ -79,6 +79,12 @@ pub struct ReadUrlInput {
     pub url: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchWebInput {
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactContextBodySource {

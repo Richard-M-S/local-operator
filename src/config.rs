@@ -19,6 +19,10 @@ pub struct LlmRouterConfig {
     pub default_model: String,
     pub coder_model: String,
     pub deep_model: String,
+    pub task_summary_model: String,
+    pub task_extraction_model: String,
+    pub task_reasoning_model: String,
+    pub task_writing_model: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +77,7 @@ pub struct LlmConfig {
     #[allow(dead_code)]
     pub provider: String,
     pub base_url: String,
+    #[allow(dead_code)]
     pub model: String,
     pub timeout_seconds: u64,
 }

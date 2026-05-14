@@ -2,7 +2,10 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{app_state::AppState, error::AppError};
+use crate::{
+    app_state::AppState, domains::employment::models::default_employment_profile_id,
+    error::AppError,
+};
 
 #[derive(Deserialize)]
 pub struct ChatCompletionRequest {
@@ -61,7 +64,11 @@ pub async fn chat_completions(
         .unwrap_or_default();
 
     let content = if req.model == "local-operator-home" {
-        state.operator.run_chat(&user_message, true).await?.message
+        state
+            .operator
+            .run_chat(&user_message, true, Some(default_employment_profile_id()))
+            .await?
+            .message
     } else {
         let llm = state
             .llm

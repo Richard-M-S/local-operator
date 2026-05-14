@@ -215,7 +215,7 @@ impl OpTaskService {
                 let mut failed_run = run;
                 failed_run.status = OpTaskRunStatus::Failed;
                 failed_run.completed_at = Some(Utc::now());
-                failed_run.summary = Some(err.to_string());
+                failed_run.summary = Some(format_error_chain(&err));
 
                 self.repo
                     .update_task_run(failed_run.clone())
@@ -301,4 +301,12 @@ impl OpTaskService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
 }

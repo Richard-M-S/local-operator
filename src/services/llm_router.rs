@@ -13,6 +13,22 @@ impl LlmRouter {
         Self { config }
     }
 
+    pub fn task_summary_model(&self) -> String {
+        self.config.task_summary_model.clone()
+    }
+
+    pub fn task_extraction_model(&self) -> String {
+        self.config.task_extraction_model.clone()
+    }
+
+    pub fn task_reasoning_model(&self) -> String {
+        self.config.task_reasoning_model.clone()
+    }
+
+    pub fn task_writing_model(&self) -> String {
+        self.config.task_writing_model.clone()
+    }
+
     pub fn route(&self, input: &str) -> LlmRouteDecision {
         let text = input.trim().to_lowercase();
 

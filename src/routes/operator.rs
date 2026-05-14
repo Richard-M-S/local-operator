@@ -4,6 +4,7 @@ use axum::{extract::State, Json};
 
 use crate::{
     app_state::AppState,
+    domains::employment::models::default_employment_profile_id,
     error::AppError,
     models::api::{ChatRequest, ChatResponse, CommandRequest, CommandResponse, ToolExecuteRequest},
 };
@@ -14,7 +15,14 @@ pub async fn chat(
 ) -> Result<Json<ChatResponse>, AppError> {
     let include_home = req.include_home.unwrap_or(true);
 
-    let result = state.operator.run_chat(&req.message, include_home).await?;
+    let result = state
+        .operator
+        .run_chat(
+            &req.message,
+            include_home,
+            Some(req.profile_id.unwrap_or_else(default_employment_profile_id)),
+        )
+        .await?;
 
     Ok(Json(result))
 }

@@ -1,7 +1,8 @@
 use crate::op_tasks::models::{
-    OpTask, OpTaskRun, OpTaskRunStatus, OpWorkItem, ReadUrlInput, TaskArtifact,
+    OpTask, OpTaskRun, OpTaskRunStatus, OpWorkItem, ReadUrlInput, SearchWebInput, TaskArtifact,
 };
 use crate::readers::ReaderService;
+use crate::services::llm_router::LlmRouter;
 use crate::services::llm_service::LlmService;
 use crate::tools::registry::ToolRegistry;
 use anyhow::Context;
@@ -14,7 +15,7 @@ pub struct OpTaskRunner {
     tools: ToolRegistry,
     llm: Option<LlmService>,
     readers: ReaderService,
-    summary_model: String,
+    llm_router: LlmRouter,
 }
 
 impl OpTaskRunner {
@@ -22,13 +23,13 @@ impl OpTaskRunner {
         tools: ToolRegistry,
         llm: Option<LlmService>,
         readers: ReaderService,
-        summary_model: String,
+        llm_router: LlmRouter,
     ) -> Self {
         Self {
             tools,
             llm,
             readers,
-            summary_model,
+            llm_router,
         }
     }
 
@@ -40,6 +41,7 @@ impl OpTaskRunner {
         match task.task_type.as_str() {
             "system.status_report" => self.run_status_report(&task, run).await,
             "reader.read_url" => self.run_read_url(&task, run).await,
+            "reader.search_web" => self.run_search_web(&task, run).await,
             _ => {
                 let message = format!("unsupported task type: {}", task.task_type);
                 run.status = OpTaskRunStatus::Failed;
@@ -80,6 +82,7 @@ impl OpTaskRunner {
         }
 
         let mut summary = format!("System status collected by {}", result.tool);
+        let summary_model = self.llm_router.task_summary_model();
         if let Some(llm) = &self.llm {
             let prompt = format!(
                 "Summarize the following system status output in a short, actionable paragraph:\n\n{}",
@@ -89,7 +92,7 @@ impl OpTaskRunner {
 
             match llm
                 .ask_model(
-                    &self.summary_model,
+                    &summary_model,
                     "You are a system status summarization assistant.",
                     &prompt,
                 )
@@ -117,6 +120,8 @@ impl OpTaskRunner {
             created_at: Utc::now(),
             metadata: Some(json!({
                 "tool": result.tool,
+                "model": summary_model,
+                "model_purpose": "task_summary",
                 "output": result.output,
             })),
             content_text: None,
@@ -189,6 +194,89 @@ impl OpTaskRunner {
         run.status = OpTaskRunStatus::Succeeded;
         run.completed_at = Some(Utc::now());
         run.summary = Some("Read URL and extracted readable text.".to_string());
+
+        Ok(run)
+    }
+
+    async fn run_search_web(&self, task: &OpTask, mut run: OpTaskRun) -> anyhow::Result<OpTaskRun> {
+        let input: SearchWebInput = serde_json::from_value(task.input_json.clone())
+            .context("invalid reader.search_web input_json")?;
+        let limit = input.limit.unwrap_or(10).clamp(1, 25);
+
+        let mut work_item = OpWorkItem {
+            id: Uuid::new_v4(),
+            run_id: run.id,
+            name: "search_web".to_string(),
+            description: Some("Search the web and save result links".to_string()),
+            order: 1,
+            status: OpTaskRunStatus::Running,
+            started_at: Some(Utc::now()),
+            completed_at: None,
+            details: None,
+        };
+
+        let results = self
+            .readers
+            .search_web(input.query.clone(), limit)
+            .await
+            .context("failed to search web")?;
+
+        work_item.status = OpTaskRunStatus::Succeeded;
+        work_item.completed_at = Some(Utc::now());
+
+        let content_text = if results.results.is_empty() {
+            format!("No search results found for '{}'.", results.query)
+        } else {
+            results
+                .results
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    format!(
+                        "{}. {}\n{}\n{}",
+                        index + 1,
+                        item.title,
+                        item.url,
+                        item.snippet.clone().unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+
+        let result_count = results.results.len();
+        let query = results.query.clone();
+
+        let artifact = TaskArtifact {
+            id: Uuid::new_v4(),
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(work_item.id),
+            name: format!("Search results: {}", query),
+            artifact_type: "search_results".to_string(),
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(json!({
+                "query": query,
+                "result_count": result_count,
+                "model_purpose": task.input_json.get("model_purpose").cloned(),
+                "priority": task.input_json.get("priority").cloned(),
+            })),
+            content_text: Some(content_text),
+            content_json: Some(json!({
+                "query": results.query,
+                "results": results.results,
+            })),
+        };
+
+        run.work_items.push(work_item);
+        run.artifacts.push(artifact);
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some(format!(
+            "Search completed for '{}' with {} results.",
+            input.query, result_count
+        ));
 
         Ok(run)
     }

@@ -49,14 +49,6 @@ impl AppState {
             None
         };
 
-        let operator = OperatorService::new(
-            tools.clone(),
-            policy.clone(),
-            audit.clone(),
-            llm.clone(),
-            llm_router.clone(),
-        );
-
         let readers = ReaderService::new();
 
         let op_task_repo = OpTaskRepository::new(db.clone());
@@ -64,16 +56,30 @@ impl AppState {
             tools.clone(),
             llm.clone(),
             readers.clone(),
-            config.llm.model.clone(),
+            llm_router.clone(),
         );
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
+        let employment_repo = EmploymentRepository::new(db.clone());
+
+        let operator = OperatorService::new(
+            tools.clone(),
+            policy.clone(),
+            audit.clone(),
+            llm.clone(),
+            llm_router.clone(),
+            op_tasks.clone(),
+            employment_repo.clone(),
+        );
 
         let context_repo = ContextRepository::new(db.clone());
         let context = ContextService::new(context_repo);
 
-        let employment_repo = EmploymentRepository::new(db.clone());
-        let employment =
-            EmploymentOpportunityService::new(employment_repo, op_tasks.clone(), llm.clone());
+        let employment = EmploymentOpportunityService::new(
+            employment_repo,
+            op_tasks.clone(),
+            llm.clone(),
+            llm_router.clone(),
+        );
         let employment_context = EmploymentContextService::new(context.clone());
 
         Ok(Self {

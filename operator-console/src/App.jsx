@@ -26,7 +26,9 @@ const STATUS_PRESETS = [
 ];
 
 const ARTIFACT_TYPE_PRESETS = [
+  { label: "All", value: "" },
   { label: "readable_web_page", value: "readable_web_page" },
+  { label: "search_results", value: "search_results" },
   { label: "job_fit_report", value: "job_fit_report" },
   { label: "cover_letter", value: "cover_letter" },
   { label: "daily_report", value: "daily_report" },
@@ -39,6 +41,13 @@ const FIT_FILTER_PRESETS = [
   { label: "Remote Only", value: "remote" },
   { label: "Needs Review", value: "needsReview" },
   { label: "Rejected / Archived", value: "final" },
+];
+
+const MAIN_TABS = [
+  { label: "Operator", value: "operator" },
+  { label: "Tasks", value: "tasks" },
+  { label: "Employment", value: "opportunities" },
+  { label: "Artifacts", value: "artifacts" },
 ];
 
 const STATUS_REASON_PRESETS = [
@@ -89,6 +98,16 @@ const styles = {
     gap: 16,
     alignItems: "center",
   },
+  profilePanel: {
+    background: "white",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 1px 8px rgba(15, 23, 42, 0.06)",
+    display: "grid",
+    gridTemplateColumns: "minmax(220px, 0.4fr) minmax(280px, 1fr) auto",
+    gap: 12,
+    alignItems: "center",
+  },
   title: {
     fontSize: 28,
     margin: "4px 0 6px",
@@ -110,6 +129,53 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     gap: 8,
+  },
+  chatPanel: {
+    background: "white",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 1px 8px rgba(15, 23, 42, 0.06)",
+    display: "grid",
+    gridTemplateColumns: "minmax(260px, 1fr) auto",
+    gap: 10,
+    alignItems: "end",
+  },
+  chatMessages: {
+    gridColumn: "1 / -1",
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    maxHeight: 220,
+    overflow: "auto",
+  },
+  chatMessage: {
+    borderRadius: 12,
+    padding: 10,
+    fontSize: 14,
+    lineHeight: 1.45,
+    border: "1px solid #e2e8f0",
+    background: "#f8fafc",
+    overflowWrap: "anywhere",
+  },
+  chatMessageUser: {
+    background: "#eef2ff",
+    borderColor: "#c7d2fe",
+  },
+  chatMessageAssistant: {
+    background: "#f8fafc",
+    borderColor: "#e2e8f0",
+  },
+  taskGrid: {
+    display: "grid",
+    gridTemplateColumns: "minmax(260px, 0.9fr) minmax(320px, 1.1fr)",
+    gap: 16,
+    alignItems: "start",
+  },
+  taskRunList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginTop: 10,
   },
   row: {
     display: "flex",
@@ -645,12 +711,16 @@ export default function App() {
   const [selectedOpportunity, setSelectedOpportunity] = useState(null);
   const [selectedArtifact, setSelectedArtifact] = useState(null);
   const [artifactContent, setArtifactContent] = useState(null);
+  const [opTasks, setOpTasks] = useState([]);
+  const [taskRunsByTaskId, setTaskRunsByTaskId] = useState({});
   const [jobUrl, setJobUrl] = useState("");
   const [opportunityDetailTab, setOpportunityDetailTab] = useState("summary");
   const [artifactDetailTab, setArtifactDetailTab] = useState("text");
-  const [activeMainTab, setActiveMainTab] = useState("opportunities");
+  const [activeMainTab, setActiveMainTab] = useState("operator");
   const [coverLetterDirection, setCoverLetterDirection] = useState("");
   const [coverLetterDraft, setCoverLetterDraft] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState(() =>
     normalizeStatusFilterValue(readStoredSetting(STORAGE_KEYS.statusFilter, "")),
@@ -661,6 +731,7 @@ export default function App() {
   const [fitFilter, setFitFilter] = useState(() => readStoredSetting(STORAGE_KEYS.fitFilter, ""));
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -704,9 +775,13 @@ export default function App() {
     () => profiles.find((profile) => profile.id === selectedProfileId) || null,
     [profiles, selectedProfileId],
   );
+  const taskRuns = useMemo(
+    () => Object.values(taskRunsByTaskId).flatMap((runs) => runs || []),
+    [taskRunsByTaskId],
+  );
   const criteriaChanged = criteriaDraft !== (selectedProfile?.criteria || "");
 
-  const computeTodayStats = async (allOpportunities, allArtifacts) => {
+  async function loadTaskData() {
     const tasksResponse = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, "/op-tasks"));
     const tasks = tasksResponse?.items || [];
     const runResponses = await Promise.all(
@@ -716,8 +791,19 @@ export default function App() {
         })),
       ),
     );
-    const runs = runResponses.flatMap((response) => response?.runs || []);
+    const runsByTaskId = {};
+    tasks.forEach((task, index) => {
+      runsByTaskId[task.id] = runResponses[index]?.runs || [];
+    });
 
+    return {
+      tasks,
+      runsByTaskId,
+      runs: runResponses.flatMap((response) => response?.runs || []),
+    };
+  }
+
+  const computeTodayStats = (allOpportunities, allArtifacts, runs) => {
     return {
       artifacts: allArtifacts.filter((artifact) => isToday(artifact.created_at)).length,
       opportunities: allOpportunities.filter((opportunity) => isToday(opportunity.first_seen_at)).length,
@@ -875,11 +961,14 @@ export default function App() {
 
       const allOpportunityItems = dashboardOpportunityResponse?.opportunities || [];
       const allArtifacts = dashboardArtifactResponse?.artifacts || [];
+      const taskData = await loadTaskData();
 
       setOpportunities(opportunityResponse?.opportunities || []);
       setAllOpportunities(allOpportunityItems);
       setArtifacts(artifactResponse?.artifacts || []);
-      setTodayStats(await computeTodayStats(allOpportunityItems, allArtifacts));
+      setOpTasks(taskData.tasks);
+      setTaskRunsByTaskId(taskData.runsByTaskId);
+      setTodayStats(computeTodayStats(allOpportunityItems, allArtifacts, taskData.runs));
     } catch (err) {
       setError(err.message || "Failed to load Operator Console data.");
     } finally {
@@ -902,6 +991,84 @@ export default function App() {
       setArtifactContent(response);
     } catch (err) {
       setError(err.message || "Failed to load artifact content.");
+    }
+  }
+
+  async function sendChatMessage() {
+    const message = chatInput.trim();
+    if (!message) return;
+
+    setChatLoading(true);
+    setError("");
+    setNotice("");
+    setChatInput("");
+    setChatMessages((items) => [...items, { role: "user", content: message }]);
+
+    try {
+      const response = await apiFetch(apiBase, token, "/api/operator/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          message,
+          include_home: true,
+          profile_id: selectedProfileId,
+        }),
+      });
+
+      setChatMessages((items) => [
+        ...items,
+        {
+          role: "assistant",
+          content: response?.message || "",
+          mode: response?.mode,
+          data: response?.data,
+        },
+      ]);
+
+      const artifact = response?.data?.artifact;
+      if (artifact?.id) {
+        setSelectedArtifact(artifact);
+        setArtifactDetailTab("text");
+        setArtifactContent({
+          artifact_id: artifact.id,
+          name: artifact.name,
+          artifact_type: artifact.artifact_type,
+          content_text: artifact.content_text,
+          content_json: artifact.content_json,
+        });
+      }
+
+      await loadAll();
+    } catch (err) {
+      setError(err.message || "Failed to run chat request.");
+      setChatMessages((items) => [
+        ...items,
+        { role: "assistant", content: err.message || "Failed to run chat request.", mode: "error" },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  async function runOpTask(taskId) {
+    setActionLoading(`run-task-${taskId}`);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/op-tasks/${taskId}/run`), {
+        method: "POST",
+      });
+      const run = response?.run;
+      setTaskRunsByTaskId((current) => ({
+        ...current,
+        [taskId]: run ? [run, ...(current[taskId] || [])] : current[taskId] || [],
+      }));
+      setNotice(run?.summary || "Task run completed.");
+      await loadAll();
+    } catch (err) {
+      setError(err.message || "Failed to run task.");
+    } finally {
+      setActionLoading("");
     }
   }
 
@@ -1293,9 +1460,9 @@ export default function App() {
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>Local Operator Console</div>
-            <h1 style={styles.title}>Employment Opportunities & Artifacts</h1>
+            <h1 style={styles.title}>Local Operator</h1>
             <p style={styles.subtitle}>
-              Review readable web artifacts, turn them into employment opportunities, then parse and score them.
+              Profile-scoped chat, task runs, artifacts, and employment review.
             </p>
           </div>
           <div style={styles.controls}>
@@ -1303,31 +1470,6 @@ export default function App() {
               <input style={styles.input} value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
               <button style={styles.button} onClick={loadAll} disabled={loading}>
                 {loading ? "Loading…" : "Refresh"}
-              </button>
-            </div>
-            <div style={styles.row}>
-              <select
-                style={styles.input}
-                value={selectedProfileId}
-                onChange={(e) => setSelectedProfileId(e.target.value)}
-                title="Profile"
-              >
-                {profiles.length === 0 ? (
-                  <option value={selectedProfileId}>{selectedProfile?.display_name || "Default"}</option>
-                ) : (
-                  profiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.display_name}
-                    </option>
-                  ))
-                )}
-              </select>
-              <button
-                style={styles.buttonSecondary}
-                onClick={createProfile}
-                disabled={actionLoading === "create-profile"}
-              >
-                New Profile
               </button>
             </div>
             <input
@@ -1340,7 +1482,77 @@ export default function App() {
           </div>
         </header>
 
-        <section style={styles.jobUrlPanel}>
+        <section style={styles.profilePanel}>
+          <div>
+            <div style={styles.fieldLabel}>Active Profile</div>
+            <div style={styles.cardTitle}>{selectedProfile?.display_name || "Default"}</div>
+            <div style={styles.muted}>{selectedProfileId}</div>
+          </div>
+          <select
+            style={styles.input}
+            value={selectedProfileId}
+            onChange={(e) => setSelectedProfileId(e.target.value)}
+            title="Profile"
+          >
+            {profiles.length === 0 ? (
+              <option value={selectedProfileId}>{selectedProfile?.display_name || "Default"}</option>
+            ) : (
+              profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.display_name}
+                </option>
+              ))
+            )}
+          </select>
+          <button
+            style={styles.buttonSecondary}
+            onClick={createProfile}
+            disabled={actionLoading === "create-profile"}
+          >
+            New Profile
+          </button>
+        </section>
+
+        <section style={styles.mainTabs}>
+          {MAIN_TABS.map((tab) => (
+            <TabButton key={tab.value} active={activeMainTab === tab.value} onClick={() => setActiveMainTab(tab.value)}>
+              {tab.label}
+            </TabButton>
+          ))}
+        </section>
+
+        {activeMainTab === "operator" ? <section style={styles.chatPanel}>
+          {chatMessages.length ? (
+            <div style={styles.chatMessages}>
+              {chatMessages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  style={{
+                    ...styles.chatMessage,
+                    ...(message.role === "user" ? styles.chatMessageUser : styles.chatMessageAssistant),
+                  }}
+                >
+                  <strong>{message.role === "user" ? "You" : "Local Operator"}:</strong> {message.content}
+                  {message.mode ? <div style={styles.muted}>{message.mode}</div> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <input
+            style={styles.input}
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") sendChatMessage();
+            }}
+            placeholder="Ask Local Operator or read a URL..."
+          />
+          <button style={styles.button} onClick={sendChatMessage} disabled={chatLoading}>
+            {chatLoading ? "Working…" : "Send"}
+          </button>
+        </section> : null}
+
+        {activeMainTab === "operator" ? <section style={styles.jobUrlPanel}>
           <label style={styles.label} htmlFor="job-url-input">
             Job URL
           </label>
@@ -1368,9 +1580,9 @@ export default function App() {
           >
             {actionLoading === "read-create-url" ? "Reading…" : "Read → Create Opportunity"}
           </button>
-        </section>
+        </section> : null}
 
-        <section style={styles.criteriaPanel}>
+        {activeMainTab === "opportunities" ? <section style={styles.criteriaPanel}>
           <div>
             <div style={styles.sectionTitle}>
               <h2 style={styles.h2}>Profile Criteria</h2>
@@ -1390,7 +1602,7 @@ export default function App() {
           >
             {actionLoading === "save-criteria" ? "Saving…" : "Save Criteria"}
           </button>
-        </section>
+        </section> : null}
 
         <section>
           <div style={styles.sectionTitle}>
@@ -1417,7 +1629,7 @@ export default function App() {
         {error ? <div style={{ ...styles.message, ...styles.error }}>{error}</div> : null}
         {notice ? <div style={{ ...styles.message, ...styles.notice }}>{notice}</div> : null}
 
-        <section style={styles.filterBar}>
+        {["opportunities", "artifacts"].includes(activeMainTab) ? <section style={styles.filterBar}>
           <input
             style={styles.input}
             value={query}
@@ -1442,16 +1654,40 @@ export default function App() {
             options={FIT_FILTER_PRESETS}
             onChange={setFitFilter}
           />
-        </section>
+        </section> : null}
 
-        <section style={styles.mainTabs}>
-          <TabButton active={activeMainTab === "opportunities"} onClick={() => setActiveMainTab("opportunities")}>
-            Opportunities ({filteredOpportunities.length})
-          </TabButton>
-          <TabButton active={activeMainTab === "artifacts"} onClick={() => setActiveMainTab("artifacts")}>
-            Artifacts ({filteredArtifacts.length})
-          </TabButton>
-        </section>
+        {activeMainTab === "tasks" ? (
+          <section style={styles.taskGrid}>
+            <div>
+              <div style={styles.sectionTitle}>
+                <h2 style={styles.h2}>Tasks</h2>
+                <span style={styles.muted}>{opTasks.length} configured</span>
+              </div>
+              <div style={styles.list}>
+                {opTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    runs={taskRunsByTaskId[task.id] || []}
+                    onRun={() => runOpTask(task.id)}
+                    actionLoading={actionLoading}
+                  />
+                ))}
+                {!opTasks.length ? <div style={styles.empty}>No tasks found.</div> : null}
+              </div>
+            </div>
+
+            <section style={styles.card}>
+              <h2 style={styles.h2}>Task Runs</h2>
+              <div style={styles.taskRunList}>
+                {taskRuns.slice(0, 20).map((run) => (
+                  <RunSummary key={run.id} run={run} />
+                ))}
+                {!taskRuns.length ? <p style={styles.muted}>No task runs yet.</p> : null}
+              </div>
+            </section>
+          </section>
+        ) : null}
 
         {activeMainTab === "opportunities" ? (
           <>
@@ -1827,6 +2063,52 @@ function ArtifactDetail({ artifact, artifactContent, activeTab, onTabChange }) {
           <JsonDebug value={metadata} summary="Show source metadata JSON" />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function TaskCard({ task, runs, onRun, actionLoading }) {
+  const latestRun = runs?.[0];
+  const priority = task.input_json?.priority || "normal";
+  const modelPurpose = task.input_json?.model_purpose || task.input_json?.modelPurpose || "task";
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHeader}>
+        <div>
+          <div style={styles.cardTitle}>{task.name}</div>
+          <div style={styles.muted}>{task.task_type}</div>
+        </div>
+        <span style={statusStyle(task.status)}>{task.status}</span>
+      </div>
+      {task.description ? <p style={styles.text}>{task.description}</p> : null}
+      <div style={styles.riskFlags}>
+        <span style={styles.badge}>Priority {priority}</span>
+        <span style={styles.badge}>Model {modelPurpose}</span>
+        <span style={styles.badge}>Runs {runs?.length || 0}</span>
+      </div>
+      {latestRun ? <RunSummary run={latestRun} compact /> : null}
+      <div style={styles.actions}>
+        <button style={styles.button} onClick={onRun} disabled={actionLoading === `run-task-${task.id}`}>
+          {actionLoading === `run-task-${task.id}` ? "Running…" : "Run"}
+        </button>
+      </div>
+      <JsonDebug value={task.input_json || {}} summary="Show task input" />
+    </div>
+  );
+}
+
+function RunSummary({ run, compact = false }) {
+  return (
+    <div style={compact ? { marginTop: 10 } : styles.field}>
+      <div style={styles.cardHeader}>
+        <span style={statusStyle(run.status)}>{run.status}</span>
+        <span style={styles.muted}>{safeDate(run.completed_at || run.started_at)}</span>
+      </div>
+      {run.summary ? <p style={styles.text}>{compact ? compactText(run.summary, 180) : run.summary}</p> : null}
+      <div style={styles.muted}>
+        {run.artifacts?.length || 0} artifacts · {run.work_items?.length || 0} work items
+      </div>
     </div>
   );
 }
