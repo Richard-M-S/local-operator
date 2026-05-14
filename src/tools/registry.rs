@@ -99,6 +99,7 @@ impl ToolRegistry {
         Ok(tool.descriptor())
     }
 
+    #[allow(dead_code)]
     pub async fn list(&self) -> Vec<ToolDescriptor> {
         self.tools
             .read()

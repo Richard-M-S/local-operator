@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod api;
 pub mod audit;
 pub mod home_assistant;

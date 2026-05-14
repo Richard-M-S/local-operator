@@ -61,12 +61,14 @@ impl ContextService {
         self.repo.get_context(context_id).await
     }
 
+    #[allow(dead_code)]
     pub async fn list_context_by_kind(&self, kind: ContextKind) -> Result<Vec<SavedContext>> {
         let mut contexts = self.repo.list_contexts().await?;
         contexts.retain(|item| item.kind == kind);
         Ok(contexts)
     }
 
+    #[allow(dead_code)]
     pub async fn attach_context_to_artifact(
         &self,
         context_id: Uuid,

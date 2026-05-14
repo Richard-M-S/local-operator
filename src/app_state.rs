@@ -13,14 +13,17 @@ use sqlx::SqlitePool;
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
+    #[allow(dead_code)]
     pub db: SqlitePool,
     pub tools: ToolRegistry,
     pub policy: PolicyEngine,
     pub audit: AuditService,
     pub llm: Option<LlmService>,
+    #[allow(dead_code)]
     pub llm_router: LlmRouter,
     pub operator: OperatorService,
     pub op_tasks: OpTaskService,
+    #[allow(dead_code)]
     pub readers: ReaderService,
     pub context: ContextService,
 }

@@ -29,6 +29,7 @@ pub struct ReadSourceResult {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct ReadableDocument {
     pub source_url: String,
     pub title: Option<String>,

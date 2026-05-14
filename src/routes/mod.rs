@@ -8,6 +8,7 @@ use crate::app_state::AppState;
 
 pub mod audit;
 pub mod auth;
+pub mod context;
 pub mod health;
 pub mod op_tasks;
 pub mod openai_compat;
@@ -17,6 +18,9 @@ pub mod status;
 pub fn router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/api/status", get(status::status))
+        .route("/api/context", get(context::list).post(context::create))
+        .route("/api/context/search", get(context::search))
+        .route("/api/context/:id", get(context::get))
         .route("/api/op-tasks", post(op_tasks::create).get(op_tasks::list))
         .route("/api/op-tasks/:id", get(op_tasks::get))
         .route("/api/op-tasks/:id/run", post(op_tasks::run))

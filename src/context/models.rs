@@ -17,6 +17,7 @@ pub enum ContextKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ContextSource {
     Url(String),
     Artifact(Uuid),
@@ -38,6 +39,7 @@ pub struct SavedContext {
 }
 
 impl SavedContext {
+    #[allow(dead_code)]
     pub fn source(&self) -> Option<ContextSource> {
         if let Some(id) = self.source_artifact_id {
             return Some(ContextSource::Artifact(id));

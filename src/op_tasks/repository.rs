@@ -197,9 +197,10 @@ impl OpTaskRepository {
 
         sqlx::query(
             r#"
-            INSERT OR REPLACE INTO task_artifacts (
+            INSERT INTO task_artifacts (
                 id, run_id, work_item_id, name, artifact_type, location, created_at, metadata_json, content_text, content_json
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(id) DO NOTHING
             "#,
         )
         .bind(artifact.id.to_string())
@@ -265,6 +266,7 @@ impl OpTaskRepository {
     ) -> anyhow::Result<Vec<TaskArtifact>> {
         let limit = search.limit.unwrap_or(50).clamp(1, 200);
         let offset = search.offset.unwrap_or(0).max(0);
+        let include_content = search.include_content.unwrap_or(false);
 
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"
@@ -277,8 +279,17 @@ impl OpTaskRepository {
                 a.location,
                 a.created_at,
                 a.metadata_json,
-                a.content_text,
-                a.content_json
+            "#,
+        );
+
+        if include_content {
+            query.push(" a.content_text, a.content_json ");
+        } else {
+            query.push(" NULL AS content_text, NULL AS content_json ");
+        }
+
+        query.push(
+            r#"
             FROM task_artifacts a
             INNER JOIN op_task_runs r ON r.id = a.run_id
             WHERE 1 = 1

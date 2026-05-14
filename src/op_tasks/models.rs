@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::context::models::ContextKind;
+
 /// A saved task definition that can be executed later.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OpTask {
@@ -63,6 +65,7 @@ pub struct ArtifactSearch {
     pub task_id: Option<Uuid>,
     pub artifact_type: Option<String>,
     pub source_url: Option<String>,
+    pub include_content: Option<bool>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -70,6 +73,30 @@ pub struct ArtifactSearch {
 #[derive(Debug, Deserialize)]
 pub struct ReadUrlInput {
     pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactContextBodySource {
+    ContentText,
+    ContentJson,
+    Metadata,
+}
+
+impl Default for ArtifactContextBodySource {
+    fn default() -> Self {
+        Self::ContentText
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PromoteArtifactToContextRequest {
+    pub kind: ContextKind,
+    pub title: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub body_source: ArtifactContextBodySource,
 }
 
 /// Lifecycle state for a saved task definition.

@@ -70,6 +70,7 @@ pub struct PolicyConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfig {
     pub enabled: bool,
+    #[allow(dead_code)]
     pub provider: String,
     pub base_url: String,
     pub model: String,

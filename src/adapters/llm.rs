@@ -7,7 +7,6 @@ use crate::{config::LlmConfig, error::AppError};
 pub struct LlmClient {
     client: Client,
     base_url: String,
-    model: String,
 }
 
 impl LlmClient {
@@ -19,12 +18,7 @@ impl LlmClient {
         Ok(Self {
             client,
             base_url: config.base_url.trim_end_matches('/').to_string(),
-            model: config.model,
         })
-    }
-
-    pub async fn chat(&self, system: &str, user: &str) -> Result<String, AppError> {
-        self.chat_with_model(&self.model, system, user).await
     }
 
     pub async fn chat_with_model(

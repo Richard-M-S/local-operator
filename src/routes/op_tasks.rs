@@ -8,9 +8,11 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    context::models::{ContextKind, SavedContext},
+    context::models::SavedContext,
     error::AppError,
-    op_tasks::models::{ArtifactSearch, OpTask, OpTaskRun, TaskArtifact},
+    op_tasks::models::{
+        ArtifactSearch, OpTask, OpTaskRun, PromoteArtifactToContextRequest, TaskArtifact,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +47,7 @@ pub struct ListArtifactsQuery {
     pub task_id: Option<Uuid>,
     pub artifact_type: Option<String>,
     pub source_url: Option<String>,
+    pub include_content: Option<bool>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -56,6 +59,7 @@ impl From<ListArtifactsQuery> for ArtifactSearch {
             task_id: query.task_id,
             artifact_type: query.artifact_type,
             source_url: query.source_url,
+            include_content: query.include_content,
             limit: query.limit,
             offset: query.offset,
         }
@@ -79,30 +83,6 @@ pub struct ArtifactContentResponse {
     pub artifact_type: String,
     pub content_text: Option<String>,
     pub content_json: Option<Value>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactContextBodySource {
-    ContentText,
-    ContentJson,
-    Metadata,
-}
-
-impl Default for ArtifactContextBodySource {
-    fn default() -> Self {
-        Self::ContentText
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SaveArtifactContextRequest {
-    pub kind: ContextKind,
-    pub title: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub body_source: ArtifactContextBodySource,
 }
 
 #[derive(Serialize)]
@@ -146,66 +126,12 @@ pub async fn get_artifact(
 pub async fn save_artifact_context(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(req): Json<SaveArtifactContextRequest>,
+    Json(req): Json<PromoteArtifactToContextRequest>,
 ) -> Result<Json<SaveArtifactContextResponse>, AppError> {
-    let artifact = state.op_tasks.get_artifact(id).await?;
-
-    let title = req.title.trim().to_string();
-    if title.is_empty() {
-        return Err(AppError::BadRequest(
-            "context title cannot be empty".to_string(),
-        ));
-    }
-
-    let body = match req.body_source {
-        ArtifactContextBodySource::ContentText => {
-            artifact.content_text.clone().ok_or_else(|| {
-                AppError::BadRequest("artifact has no content_text to save".to_string())
-            })?
-        }
-        ArtifactContextBodySource::ContentJson => artifact
-            .content_json
-            .as_ref()
-            .map(serde_json::to_string_pretty)
-            .transpose()
-            .map_err(|err| AppError::Internal(err.to_string()))?
-            .ok_or_else(|| {
-                AppError::BadRequest("artifact has no content_json to save".to_string())
-            })?,
-        ArtifactContextBodySource::Metadata => artifact
-            .metadata
-            .as_ref()
-            .map(serde_json::to_string_pretty)
-            .transpose()
-            .map_err(|err| AppError::Internal(err.to_string()))?
-            .ok_or_else(|| AppError::BadRequest("artifact has no metadata to save".to_string()))?,
-    };
-
-    if body.trim().is_empty() {
-        return Err(AppError::BadRequest(
-            "artifact content is empty".to_string(),
-        ));
-    }
-
-    let tags = req
-        .tags
-        .into_iter()
-        .map(|tag| tag.trim().to_string())
-        .filter(|tag| !tag.is_empty())
-        .collect();
-
     let context = state
-        .context
-        .save_context_note(
-            req.kind,
-            title,
-            body,
-            artifact.location.clone(),
-            Some(artifact.id),
-            tags,
-        )
-        .await
-        .map_err(|err| AppError::Internal(err.to_string()))?;
+        .op_tasks
+        .promote_artifact_to_context(&state.context, id, req)
+        .await?;
 
     Ok(Json(SaveArtifactContextResponse { context }))
 }

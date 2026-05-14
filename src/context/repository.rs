@@ -81,6 +81,7 @@ impl ContextRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    #[allow(dead_code)]
     pub async fn update_context(&self, context: SavedContext) -> anyhow::Result<SavedContext> {
         sqlx::query(
             r#"
@@ -109,6 +110,7 @@ impl ContextRepository {
         Ok(context)
     }
 
+    #[allow(dead_code)]
     pub async fn delete_context(&self, context_id: Uuid) -> anyhow::Result<()> {
         sqlx::query(
             r#"

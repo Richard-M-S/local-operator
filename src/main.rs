@@ -9,6 +9,7 @@ mod app_state;
 mod config;
 mod context;
 mod db;
+mod domains;
 mod error;
 mod models;
 mod op_tasks;
