@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct EmploymentOpportunityService {
-    repository: EmploymentRepository,
+    pub repository: EmploymentRepository,
     op_tasks: OpTaskService,
     llm: Option<LlmService>,
 }

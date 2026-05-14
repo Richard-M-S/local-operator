@@ -46,6 +46,11 @@ pub struct ListEmploymentOpportunitiesQuery {
     pub offset: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StatusUpdateRequest {
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EmploymentOpportunityResponse {
     pub opportunity: EmploymentOpportunity,
@@ -144,5 +149,65 @@ pub async fn score_opportunity(
     Path(opportunity_id): Path<Uuid>,
 ) -> Result<Json<EmploymentOpportunityResponse>, AppError> {
     let opportunity = state.employment.score_opportunity(opportunity_id).await?;
+    Ok(Json(EmploymentOpportunityResponse { opportunity }))
+}
+
+pub async fn archive_opportunity(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<Uuid>,
+    Json(req): Json<StatusUpdateRequest>,
+) -> Result<Json<EmploymentOpportunityResponse>, AppError> {
+    let opportunity = state
+        .employment
+        .repository
+        .update_opportunity_status(
+            opportunity_id,
+            EmploymentOpportunityStatus::Archived,
+            req.reason,
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("opportunity not found".to_string()))?;
+
+    Ok(Json(EmploymentOpportunityResponse { opportunity }))
+}
+
+pub async fn reject_opportunity(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<Uuid>,
+    Json(req): Json<StatusUpdateRequest>,
+) -> Result<Json<EmploymentOpportunityResponse>, AppError> {
+    let opportunity = state
+        .employment
+        .repository
+        .update_opportunity_status(
+            opportunity_id,
+            EmploymentOpportunityStatus::Rejected,
+            req.reason,
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("opportunity not found".to_string()))?;
+
+    Ok(Json(EmploymentOpportunityResponse { opportunity }))
+}
+
+pub async fn restore_opportunity(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<Uuid>,
+    Json(req): Json<StatusUpdateRequest>,
+) -> Result<Json<EmploymentOpportunityResponse>, AppError> {
+    let opportunity = state
+        .employment
+        .repository
+        .update_opportunity_status(
+            opportunity_id,
+            EmploymentOpportunityStatus::QueuedForReview,
+            req.reason,
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("opportunity not found".to_string()))?;
+
     Ok(Json(EmploymentOpportunityResponse { opportunity }))
 }

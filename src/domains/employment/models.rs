@@ -82,8 +82,11 @@ pub enum EmploymentOpportunityStatus {
     Discovered,
     Parsed,
     Scored,
-    Skipped,
     QueuedForReview,
+    Applied,
+    Skipped,
+    Rejected,
+    Archived,
     Closed,
     Other(String),
 }

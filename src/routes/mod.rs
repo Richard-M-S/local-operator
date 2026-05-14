@@ -61,6 +61,18 @@ pub fn router(state: AppState) -> Router {
             post(employment::score_opportunity),
         )
         .route(
+            "/api/employment/opportunities/:id/archive",
+            post(employment::archive_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/:id/reject",
+            post(employment::reject_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/:id/restore",
+            post(employment::restore_opportunity),
+        )
+        .route(
             "/api/employment/opportunities/from-artifact/:artifact_id",
             post(employment::create_opportunity_from_artifact),
         )

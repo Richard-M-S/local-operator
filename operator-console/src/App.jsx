@@ -9,12 +9,16 @@ const STORAGE_KEYS = {
 };
 
 const STATUS_PRESETS = [
-  { label: "All", value: "" },
+  { label: "Active", value: "" },
+  { label: "All", value: "all" },
   { label: "Discovered", value: "Discovered" },
   { label: "Parsed", value: "Parsed" },
   { label: "Scored", value: "Scored" },
-  { label: "Skipped", value: "Skipped" },
+  { label: "Applied", value: "Applied" },
   { label: "Queued for Review", value: "QueuedForReview" },
+  { label: "Skipped", value: "Skipped" },
+  { label: "Rejected", value: "Rejected" },
+  { label: "Archived", value: "Archived" },
   { label: "Closed", value: "Closed" },
 ];
 
@@ -886,6 +890,69 @@ export default function App() {
     }
   }
 
+  async function archiveOpportunity(id, reason = "") {
+    setActionLoading(`archive-${id}`);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason || null }),
+      });
+
+      setSelectedOpportunity(response.opportunity);
+      setNotice("Opportunity archived.");
+      await loadAll();
+    } catch (err) {
+      setError(err.message || "Failed to archive opportunity.");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function rejectOpportunity(id, reason = "") {
+    setActionLoading(`reject-${id}`);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason || null }),
+      });
+
+      setSelectedOpportunity(response.opportunity);
+      setNotice("Opportunity marked as rejected.");
+      await loadAll();
+    } catch (err) {
+      setError(err.message || "Failed to reject opportunity.");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function restoreOpportunity(id, reason = "") {
+    setActionLoading(`restore-${id}`);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/restore`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason || null }),
+      });
+
+      setSelectedOpportunity(response.opportunity);
+      setNotice("Opportunity restored to review queue.");
+      await loadAll();
+    } catch (err) {
+      setError(err.message || "Failed to restore opportunity.");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
   function openOpportunitySourceUrl(opportunity) {
     if (!opportunity?.source_url) {
       setError("Opportunity has no source URL.");
@@ -1047,6 +1114,9 @@ export default function App() {
                   }}
                   onParse={() => parseOpportunity(item.id)}
                   onScore={() => scoreOpportunity(item.id)}
+                  onArchive={() => archiveOpportunity(item.id)}
+                  onReject={() => rejectOpportunity(item.id)}
+                  onRestore={() => restoreOpportunity(item.id)}
                   onOpenSource={() => openOpportunitySourceUrl(item)}
                   onViewArtifact={() => viewOpportunitySourceArtifact(item)}
                   actionLoading={actionLoading}
@@ -1301,10 +1371,17 @@ function OpportunityCard({
   onSelect,
   onParse,
   onScore,
+  onArchive,
+  onReject,
+  onRestore,
   onOpenSource,
   onViewArtifact,
   actionLoading,
 }) {
+  const isArchived = item.status === "Archived";
+  const isRejected = item.status === "Rejected";
+  const isClosedOrFinal = ["Archived", "Rejected", "Closed"].includes(item.status);
+
   return (
     <div style={{ ...styles.card, ...(selected ? styles.selectedCard : {}) }} onClick={onSelect}>
       <div style={styles.cardHeader}>
@@ -1317,12 +1394,31 @@ function OpportunityCard({
       <p style={styles.text}>{compactText(item.description_text)}</p>
       <div style={styles.muted}>Fit: {item.fit_score ?? "—"} · Remote: {item.remote_type || "—"} · Updated: {safeDate(item.last_seen_at)}</div>
       <div style={styles.actions}>
-        <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onParse(); }}>
-          {actionLoading === `parse-${item.id}` ? "Parsing…" : "Parse"}
-        </button>
-        <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onScore(); }}>
-          {actionLoading === `score-${item.id}` ? "Scoring…" : "Score"}
-        </button>
+        {!isClosedOrFinal && (
+          <>
+            <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onParse(); }}>
+              {actionLoading === `parse-${item.id}` ? "Parsing…" : "Parse"}
+            </button>
+            <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onScore(); }}>
+              {actionLoading === `score-${item.id}` ? "Scoring…" : "Score"}
+            </button>
+          </>
+        )}
+        {!isClosedOrFinal && (
+          <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onArchive(); }}>
+            {actionLoading === `archive-${item.id}` ? "Archiving…" : "Archive"}
+          </button>
+        )}
+        {!isClosedOrFinal && (
+          <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onReject(); }}>
+            {actionLoading === `reject-${item.id}` ? "Rejecting…" : "Reject"}
+          </button>
+        )}
+        {(isArchived || isRejected) && (
+          <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onRestore(); }}>
+            {actionLoading === `restore-${item.id}` ? "Restoring…" : "Restore"}
+          </button>
+        )}
         <button style={styles.buttonSecondary} onClick={(e) => { e.stopPropagation(); onOpenSource(); }}>
           Open Source URL
         </button>
