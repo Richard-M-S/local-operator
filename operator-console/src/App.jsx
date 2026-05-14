@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   profileId: "profileId",
   artifactTypeFilter: "artifactTypeFilter",
   statusFilter: "statusFilter",
+  fitFilter: "fitFilter",
 };
 
 const STATUS_PRESETS = [
@@ -30,6 +31,37 @@ const ARTIFACT_TYPE_PRESETS = [
   { label: "cover_letter", value: "cover_letter" },
   { label: "daily_report", value: "daily_report" },
 ];
+
+const FIT_FILTER_PRESETS = [
+  { label: "All", value: "" },
+  { label: "Primary Fit 75+", value: "primary75" },
+  { label: "OE Fit 75+", value: "oe75" },
+  { label: "Remote Only", value: "remote" },
+  { label: "Needs Review", value: "needsReview" },
+  { label: "Rejected / Archived", value: "final" },
+];
+
+const STATUS_REASON_PRESETS = [
+  "Not remote",
+  "Too admin-heavy for primary",
+  "Too high-risk for OE",
+  "Rejection received",
+  "Test record",
+  "Compensation too low",
+  "Heavy meetings/on-call",
+];
+
+const RISK_FLAG_LABELS = {
+  on_site_or_hybrid: "On-site / hybrid",
+  heavy_meetings: "Heavy meetings",
+  on_call: "On-call",
+  sole_owner: "Sole owner",
+  client_facing: "Client-facing",
+  strict_availability: "Strict availability",
+  heavy_travel: "Heavy travel",
+  conflict_risk: "Conflict risk",
+  unclear_scope: "Unclear scope",
+};
 
 const styles = {
   page: {
@@ -183,7 +215,7 @@ const styles = {
     padding: 14,
     boxShadow: "0 1px 8px rgba(15, 23, 42, 0.06)",
     display: "grid",
-    gridTemplateColumns: "minmax(260px, 1fr) 1.4fr 1fr",
+    gridTemplateColumns: "minmax(260px, 1fr) 1.4fr 1fr 1.2fr",
     gap: 12,
     alignItems: "start",
   },
@@ -332,6 +364,16 @@ const styles = {
   badgeBad: {
     background: "#ffe4e6",
     color: "#9f1239",
+  },
+  badgeInfo: {
+    background: "#dbeafe",
+    color: "#1d4ed8",
+  },
+  riskFlags: {
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap",
+    marginTop: 10,
   },
   actions: {
     display: "flex",
@@ -488,6 +530,21 @@ function formatSalary(item) {
   return `${min} - ${max}`;
 }
 
+function formatScore(value) {
+  return value === null || value === undefined ? "—" : Number(value).toLocaleString();
+}
+
+function formatTrack(value) {
+  if (!value) return "—";
+  return String(value)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function riskFlagLabel(value) {
+  return RISK_FLAG_LABELS[value] || formatTrack(value);
+}
+
 function stringifyJson(value) {
   if (!value) return "{}";
   return JSON.stringify(value, null, 2);
@@ -599,6 +656,7 @@ export default function App() {
   const [artifactTypeFilter, setArtifactTypeFilter] = useState(() =>
     readStoredSetting(STORAGE_KEYS.artifactTypeFilter, "readable_web_page"),
   );
+  const [fitFilter, setFitFilter] = useState(() => readStoredSetting(STORAGE_KEYS.fitFilter, ""));
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState("");
   const [error, setError] = useState("");
@@ -607,12 +665,28 @@ export default function App() {
   const filteredOpportunities = useMemo(() => {
     const q = query.trim().toLowerCase();
     return opportunities.filter((item) => {
-      if (!q) return true;
-      return [item.title, item.company, item.location, item.source_url, item.description_text]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(q));
+      const queryMatch =
+        !q ||
+        [item.title, item.company, item.location, item.source_url, item.description_text, item.score_reason]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(q));
+      if (!queryMatch) return false;
+
+      if (fitFilter === "primary75") return Number(item.primary_fit_score || 0) >= 75;
+      if (fitFilter === "oe75") return Number(item.oe_fit_score || 0) >= 75;
+      if (fitFilter === "remote") return String(item.remote_type || "").toLowerCase() === "remote";
+      if (fitFilter === "needsReview") {
+        return (
+          formatTrack(item.recommended_track).toLowerCase() === "manual review" ||
+          (item.risk_flags || []).some((flag) =>
+            ["conflict_risk", "strict_availability", "unclear_scope"].includes(flag),
+          )
+        );
+      }
+      if (fitFilter === "final") return ["rejected", "archived"].includes(normalizeStatus(item.status));
+      return true;
     });
-  }, [opportunities, query]);
+  }, [opportunities, query, fitFilter]);
 
   const filteredArtifacts = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -649,7 +723,11 @@ export default function App() {
         ["discovered", "queuedforreview"].includes(normalizeStatus(opportunity.status)),
       ).length,
       needsScore: allOpportunities.filter((opportunity) => normalizeStatus(opportunity.status) === "parsed").length,
-      highFit: allOpportunities.filter((opportunity) => Number(opportunity.fit_score || 0) >= 80).length,
+      highFit: allOpportunities.filter(
+        (opportunity) =>
+          Number(opportunity.primary_fit_score || opportunity.fit_score || 0) >= 80 ||
+          Number(opportunity.oe_fit_score || 0) >= 80,
+      ).length,
       failedRuns: runs.filter((run) => normalizeStatus(run.status) === "failed" && isToday(run.completed_at || run.started_at)).length,
     };
   };
@@ -673,6 +751,10 @@ export default function App() {
   useEffect(() => {
     writeStoredSetting(STORAGE_KEYS.statusFilter, statusFilter);
   }, [statusFilter]);
+
+  useEffect(() => {
+    writeStoredSetting(STORAGE_KEYS.fitFilter, fitFilter);
+  }, [fitFilter]);
 
   async function loadProfiles() {
     try {
@@ -743,6 +825,23 @@ export default function App() {
     } finally {
       setActionLoading("");
     }
+  }
+
+  function mergeOpportunity(opportunity) {
+    if (!opportunity?.id) return;
+
+    const upsert = (items) => {
+      const exists = items.some((item) => item.id === opportunity.id);
+      if (!exists) return [opportunity, ...items];
+      return items.map((item) => (item.id === opportunity.id ? opportunity : item));
+    };
+
+    setOpportunities(upsert);
+    setAllOpportunities(upsert);
+    setSelectedOpportunity((current) => {
+      if (!current || current.id === opportunity.id) return opportunity;
+      return current;
+    });
   }
 
   async function loadAll() {
@@ -868,7 +967,7 @@ export default function App() {
             return;
           }
 
-          setSelectedOpportunity(duplicateOpportunity);
+          mergeOpportunity(duplicateOpportunity);
           setNotice("Read job URL and opened the existing matching opportunity.");
         } else {
           const opportunityResponse = await apiFetch(
@@ -877,7 +976,7 @@ export default function App() {
             profileApiPath(selectedProfileId, `/opportunities/from-artifact/${artifact.id}`),
             { method: "POST" },
           );
-          setSelectedOpportunity(opportunityResponse.opportunity);
+          mergeOpportunity(opportunityResponse.opportunity);
           setNotice("Read job URL and created an employment opportunity.");
         }
 
@@ -911,7 +1010,7 @@ export default function App() {
 
     try {
       if (duplicateOpportunity) {
-        setSelectedOpportunity(duplicateOpportunity);
+        mergeOpportunity(duplicateOpportunity);
         setOpportunityDetailTab("summary");
         setNotice("Opened existing opportunity instead of creating a duplicate.");
         return;
@@ -924,7 +1023,7 @@ export default function App() {
         { method: "POST" },
       );
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setOpportunityDetailTab("summary");
       setNotice("Created employment opportunity from artifact.");
       await loadAll();
@@ -973,14 +1072,13 @@ export default function App() {
         opportunity = response.opportunity;
       }
 
-      setSelectedOpportunity(opportunity);
+      mergeOpportunity(opportunity);
       setOpportunityDetailTab(score ? "summary" : "parsed");
       if (duplicateOpportunity) {
         setNotice(score ? "Parsed and scored existing opportunity." : "Parsed existing opportunity.");
       } else {
         setNotice(score ? "Created, parsed, and scored opportunity." : "Created and parsed opportunity.");
       }
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to run artifact workflow.");
     } finally {
@@ -998,10 +1096,9 @@ export default function App() {
         method: "POST",
       });
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setOpportunityDetailTab("parsed");
       setNotice("Parsed opportunity with LLM.");
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to parse opportunity.");
     } finally {
@@ -1019,10 +1116,9 @@ export default function App() {
         method: "POST",
       });
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setOpportunityDetailTab("summary");
       setNotice("Scored opportunity.");
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to score opportunity.");
     } finally {
@@ -1041,14 +1137,30 @@ export default function App() {
         body: JSON.stringify({ reason: reason || null }),
       });
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setNotice("Opportunity archived.");
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to archive opportunity.");
     } finally {
       setActionLoading("");
     }
+  }
+
+  function promptStatusReason(actionLabel) {
+    const value = window.prompt(
+      `${actionLabel} reason:\n\n${STATUS_REASON_PRESETS.map((reason, index) => `${index + 1}. ${reason}`).join(
+        "\n",
+      )}\n\nEnter a number or custom reason.`,
+      STATUS_REASON_PRESETS[0],
+    );
+    if (value === null) return null;
+
+    const presetIndex = Number(value.trim());
+    if (Number.isInteger(presetIndex) && presetIndex >= 1 && presetIndex <= STATUS_REASON_PRESETS.length) {
+      return STATUS_REASON_PRESETS[presetIndex - 1];
+    }
+
+    return value.trim();
   }
 
   async function rejectOpportunity(id, reason = "") {
@@ -1062,9 +1174,8 @@ export default function App() {
         body: JSON.stringify({ reason: reason || null }),
       });
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setNotice("Opportunity marked as rejected.");
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to reject opportunity.");
     } finally {
@@ -1083,9 +1194,8 @@ export default function App() {
         body: JSON.stringify({ reason: reason || null }),
       });
 
-      setSelectedOpportunity(response.opportunity);
+      mergeOpportunity(response.opportunity);
       setNotice("Opportunity restored to review queue.");
-      await loadAll();
     } catch (err) {
       setError(err.message || "Failed to restore opportunity.");
     } finally {
@@ -1293,6 +1403,12 @@ export default function App() {
             options={ARTIFACT_TYPE_PRESETS}
             onChange={setArtifactTypeFilter}
           />
+          <PresetGroup
+            label="Fit"
+            value={fitFilter}
+            options={FIT_FILTER_PRESETS}
+            onChange={setFitFilter}
+          />
         </section>
 
         <section style={styles.mainTabs}>
@@ -1323,8 +1439,14 @@ export default function App() {
                     }}
                     onParse={() => parseOpportunity(item.id)}
                     onScore={() => scoreOpportunity(item.id)}
-                    onArchive={() => archiveOpportunity(item.id)}
-                    onReject={() => rejectOpportunity(item.id)}
+                    onArchive={() => {
+                      const reason = promptStatusReason("Archive");
+                      if (reason !== null) archiveOpportunity(item.id, reason);
+                    }}
+                    onReject={() => {
+                      const reason = promptStatusReason("Reject");
+                      if (reason !== null) rejectOpportunity(item.id, reason);
+                    }}
                     onRestore={() => restoreOpportunity(item.id)}
                     onOpenSource={() => openOpportunitySourceUrl(item)}
                     onViewArtifact={() => {
@@ -1484,6 +1606,20 @@ function JsonDebug({ value, summary = "Show JSON" }) {
   );
 }
 
+function RiskFlags({ flags }) {
+  if (!flags?.length) return null;
+
+  return (
+    <div style={styles.riskFlags}>
+      {flags.map((flag) => (
+        <span key={flag} style={{ ...styles.badge, ...styles.badgeBad }}>
+          {riskFlagLabel(flag)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function OpportunityDetail({ opportunity, activeTab, onTabChange }) {
   return (
     <div>
@@ -1503,16 +1639,25 @@ function OpportunityDetail({ opportunity, activeTab, onTabChange }) {
       </div>
 
       {activeTab === "summary" ? (
-        <div style={styles.fieldGrid}>
-          <Field label="Title" value={opportunity.title} />
-          <Field label="Company" value={opportunity.company} />
-          <Field label="Location" value={opportunity.location} />
-          <Field label="Remote Type" value={opportunity.remote_type} />
-          <Field label="Salary" value={formatSalary(opportunity)} />
-          <Field label="Fit Score" value={opportunity.fit_score ?? "—"} />
-          <Field label="Status" value={opportunity.status} />
-          <Field label="Source URL" value={opportunity.source_url} />
-        </div>
+        <>
+          <div style={styles.fieldGrid}>
+            <Field label="Title" value={opportunity.title} />
+            <Field label="Company" value={opportunity.company} />
+            <Field label="Location" value={opportunity.location} />
+            <Field label="Remote Type" value={opportunity.remote_type} />
+            <Field label="Salary" value={formatSalary(opportunity)} />
+            <Field label="Primary Fit" value={formatScore(opportunity.primary_fit_score ?? opportunity.fit_score)} />
+            <Field label="OE Fit" value={formatScore(opportunity.oe_fit_score)} />
+            <Field label="Recommended Track" value={formatTrack(opportunity.recommended_track)} />
+            <Field label="Status" value={opportunity.status} />
+            <Field label="Source URL" value={opportunity.source_url} />
+          </div>
+          <RiskFlags flags={opportunity.risk_flags || []} />
+          {opportunity.score_reason ? <p style={styles.text}>{opportunity.score_reason}</p> : null}
+          {opportunity.skip_recommendation ? (
+            <div style={{ ...styles.message, ...styles.error }}>{opportunity.skip_recommendation}</div>
+          ) : null}
+        </>
       ) : null}
 
       {activeTab === "parsed" ? (
@@ -1605,7 +1750,16 @@ function OpportunityCard({
         <span style={statusStyle(item.status)}>{item.status || "unknown"}</span>
       </div>
       <p style={styles.text}>{compactText(item.description_text)}</p>
-      <div style={styles.muted}>Fit: {item.fit_score ?? "—"} · Remote: {item.remote_type || "—"} · Updated: {safeDate(item.last_seen_at)}</div>
+      <div style={styles.riskFlags}>
+        <span style={{ ...styles.badge, ...styles.badgeGood }}>
+          Primary {formatScore(item.primary_fit_score ?? item.fit_score)}
+        </span>
+        <span style={{ ...styles.badge, ...styles.badgeInfo }}>OE {formatScore(item.oe_fit_score)}</span>
+        <span style={styles.badge}>{formatTrack(item.recommended_track)}</span>
+      </div>
+      <RiskFlags flags={item.risk_flags || []} />
+      <div style={styles.muted}>Remote: {item.remote_type || "—"} · Updated: {safeDate(item.last_seen_at)}</div>
+      {item.score_reason ? <p style={styles.text}>{compactText(item.score_reason, 220)}</p> : null}
       <div style={styles.actions}>
         {!isClosedOrFinal && (
           <>

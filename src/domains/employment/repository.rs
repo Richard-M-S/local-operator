@@ -25,6 +25,7 @@ impl EmploymentRepository {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let risk_flags_json = serde_json::to_string(&opportunity.risk_flags)?;
 
         sqlx::query(
             r#"
@@ -42,13 +43,19 @@ impl EmploymentRepository {
                 description_text,
                 extracted_json,
                 fit_score,
+                primary_fit_score,
+                oe_fit_score,
+                recommended_track,
+                score_reason,
+                risk_flags_json,
                 status,
                 skip_reason,
+                skip_recommendation,
                 source_artifact_id,
                 first_seen_at,
                 last_seen_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
             "#,
         )
         .bind(opportunity.id.to_string())
@@ -64,8 +71,14 @@ impl EmploymentRepository {
         .bind(&opportunity.description_text)
         .bind(extracted_json)
         .bind(opportunity.fit_score)
+        .bind(opportunity.primary_fit_score)
+        .bind(opportunity.oe_fit_score)
+        .bind(&opportunity.recommended_track)
+        .bind(&opportunity.score_reason)
+        .bind(risk_flags_json)
         .bind(opportunity.status.as_str())
         .bind(&opportunity.skip_reason)
+        .bind(&opportunity.skip_recommendation)
         .bind(opportunity.source_artifact_id.map(|id| id.to_string()))
         .bind(opportunity.first_seen_at.to_rfc3339())
         .bind(opportunity.last_seen_at.to_rfc3339())
@@ -95,8 +108,14 @@ impl EmploymentRepository {
                 description_text,
                 extracted_json,
                 fit_score,
+                primary_fit_score,
+                oe_fit_score,
+                recommended_track,
+                score_reason,
+                risk_flags_json,
                 status,
                 skip_reason,
+                skip_recommendation,
                 source_artifact_id,
                 first_seen_at,
                 last_seen_at
@@ -132,8 +151,14 @@ impl EmploymentRepository {
                 description_text,
                 extracted_json,
                 fit_score,
+                primary_fit_score,
+                oe_fit_score,
+                recommended_track,
+                score_reason,
+                risk_flags_json,
                 status,
                 skip_reason,
+                skip_recommendation,
                 source_artifact_id,
                 first_seen_at,
                 last_seen_at
@@ -175,8 +200,14 @@ impl EmploymentRepository {
                 description_text,
                 extracted_json,
                 fit_score,
+                primary_fit_score,
+                oe_fit_score,
+                recommended_track,
+                score_reason,
+                risk_flags_json,
                 status,
                 skip_reason,
+                skip_recommendation,
                 source_artifact_id,
                 first_seen_at,
                 last_seen_at
@@ -248,6 +279,7 @@ impl EmploymentRepository {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let risk_flags_json = serde_json::to_string(&opportunity.risk_flags)?;
 
         sqlx::query(
             r#"
@@ -265,12 +297,18 @@ impl EmploymentRepository {
                 description_text = ?10,
                 extracted_json = ?11,
                 fit_score = ?12,
-                status = ?13,
-                skip_reason = ?14,
-                source_artifact_id = ?15,
-                first_seen_at = ?16,
-                last_seen_at = ?17
-            WHERE id = ?18
+                primary_fit_score = ?13,
+                oe_fit_score = ?14,
+                recommended_track = ?15,
+                score_reason = ?16,
+                risk_flags_json = ?17,
+                status = ?18,
+                skip_reason = ?19,
+                skip_recommendation = ?20,
+                source_artifact_id = ?21,
+                first_seen_at = ?22,
+                last_seen_at = ?23
+            WHERE id = ?24
             "#,
         )
         .bind(&opportunity.source_url)
@@ -285,8 +323,14 @@ impl EmploymentRepository {
         .bind(&opportunity.description_text)
         .bind(extracted_json)
         .bind(opportunity.fit_score)
+        .bind(opportunity.primary_fit_score)
+        .bind(opportunity.oe_fit_score)
+        .bind(&opportunity.recommended_track)
+        .bind(&opportunity.score_reason)
+        .bind(risk_flags_json)
         .bind(opportunity.status.as_str())
         .bind(&opportunity.skip_reason)
+        .bind(&opportunity.skip_recommendation)
         .bind(opportunity.source_artifact_id.map(|id| id.to_string()))
         .bind(opportunity.first_seen_at.to_rfc3339())
         .bind(opportunity.last_seen_at.to_rfc3339())
@@ -439,8 +483,14 @@ struct EmploymentOpportunityRow {
     description_text: Option<String>,
     extracted_json: Option<String>,
     fit_score: Option<i64>,
+    primary_fit_score: Option<i64>,
+    oe_fit_score: Option<i64>,
+    recommended_track: Option<String>,
+    score_reason: Option<String>,
+    risk_flags_json: Option<String>,
     status: String,
     skip_reason: Option<String>,
+    skip_recommendation: Option<String>,
     source_artifact_id: Option<String>,
     first_seen_at: String,
     last_seen_at: String,
@@ -464,8 +514,17 @@ impl From<EmploymentOpportunityRow> for EmploymentOpportunity {
                 .extracted_json
                 .and_then(|value| serde_json::from_str(&value).ok()),
             fit_score: row.fit_score,
+            primary_fit_score: row.primary_fit_score,
+            oe_fit_score: row.oe_fit_score,
+            recommended_track: row.recommended_track,
+            score_reason: row.score_reason,
+            risk_flags: row
+                .risk_flags_json
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or_default(),
             status: parse_opportunity_status(&row.status),
             skip_reason: row.skip_reason,
+            skip_recommendation: row.skip_recommendation,
             source_artifact_id: row
                 .source_artifact_id
                 .and_then(|id| Uuid::parse_str(&id).ok()),

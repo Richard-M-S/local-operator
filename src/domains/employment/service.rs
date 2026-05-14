@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use chrono::Utc;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
@@ -201,50 +202,263 @@ impl EmploymentOpportunityService {
         &self,
         opportunity_id: Uuid,
     ) -> Result<EmploymentOpportunity, AppError> {
-        // Get the opportunity
         let mut opportunity = self
             .get_opportunity(opportunity_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Employment opportunity not found".to_string()))?;
 
-        // Calculate fit score (simple algorithm for now)
-        let mut score = 0i64;
+        let profile = self
+            .repository
+            .get_profile(opportunity.profile_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound("Employment profile not found".to_string()))?;
+        let criteria = profile.criteria.unwrap_or_else(|| {
+            "Score for primary fit and OE fit. Favor confirmed remote work, clear scope, low risk, and strong match to the profile.".to_string()
+        });
 
-        // Remote work bonus
-        if opportunity
-            .remote_type
-            .as_ref()
-            .map(|rt| rt == "Remote")
-            .unwrap_or(false)
-        {
-            score += 50;
-        }
+        let job_json = opportunity_scoring_json(&opportunity);
+        let scored = if let Some(llm_service) = &self.llm {
+            llm_service
+                .score_job_opportunity("qwen2.5:14b", &job_json, &criteria)
+                .await
+                .unwrap_or_else(|_| heuristic_score(&opportunity, &criteria))
+        } else {
+            heuristic_score(&opportunity, &criteria)
+        };
 
-        // Salary bonus (higher salary = higher score)
-        if let Some(salary_max) = opportunity.salary_max {
-            score += (salary_max / 1000).min(100); // Max 100 points for salary
-        }
+        apply_scoring_output(&mut opportunity, scored);
 
-        // Company bonus (if it's a known good company - placeholder)
-        if opportunity
-            .company
-            .as_ref()
-            .map(|c| c.to_lowercase().contains("tech"))
-            .unwrap_or(false)
-        {
-            score += 20;
-        }
-
-        opportunity.fit_score = Some(score);
+        opportunity.fit_score = opportunity.primary_fit_score.or(opportunity.oe_fit_score);
         opportunity.status = EmploymentOpportunityStatus::Scored;
         opportunity.last_seen_at = Utc::now();
 
-        // Save the updated opportunity
         self.repository
             .update_opportunity(opportunity)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
+}
+
+fn opportunity_scoring_json(opportunity: &EmploymentOpportunity) -> serde_json::Value {
+    json!({
+        "id": opportunity.id,
+        "title": opportunity.title,
+        "company": opportunity.company,
+        "location": opportunity.location,
+        "remote_type": opportunity.remote_type,
+        "salary_min": opportunity.salary_min,
+        "salary_max": opportunity.salary_max,
+        "description_text": opportunity.description_text,
+        "extracted_json": opportunity.extracted_json,
+        "source_url": opportunity.source_url,
+    })
+}
+
+fn apply_scoring_output(opportunity: &mut EmploymentOpportunity, scored: serde_json::Value) {
+    opportunity.primary_fit_score = scored
+        .get("primary_fit_score")
+        .and_then(|value| value.as_i64())
+        .map(clamp_score);
+    opportunity.oe_fit_score = scored
+        .get("oe_fit_score")
+        .and_then(|value| value.as_i64())
+        .map(clamp_score);
+    opportunity.recommended_track = scored
+        .get("recommended_track")
+        .and_then(|value| value.as_str())
+        .map(clean_score_text);
+    opportunity.score_reason = scored
+        .get("score_reason")
+        .and_then(|value| value.as_str())
+        .map(clean_score_text);
+    opportunity.risk_flags = scored
+        .get("risk_flags")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(clean_score_text)
+                .filter(|value| is_known_risk_flag(value))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    opportunity.skip_recommendation = scored
+        .get("skip_recommendation")
+        .and_then(|value| value.as_str())
+        .map(clean_score_text)
+        .filter(|value| !value.is_empty());
+
+    enforce_oe_remote_requirement(opportunity);
+}
+
+fn heuristic_score(opportunity: &EmploymentOpportunity, criteria: &str) -> serde_json::Value {
+    let text = format!(
+        "{}\n{}\n{}\n{}",
+        opportunity.title.clone().unwrap_or_default(),
+        opportunity.remote_type.clone().unwrap_or_default(),
+        opportunity.description_text.clone().unwrap_or_default(),
+        criteria
+    )
+    .to_lowercase();
+
+    let remote_confirmed = opportunity
+        .remote_type
+        .as_ref()
+        .map(|value| value.eq_ignore_ascii_case("remote"))
+        .unwrap_or(false);
+
+    let mut risk_flags = detect_risk_flags(&text);
+    if !remote_confirmed && !risk_flags.iter().any(|flag| flag == "on_site_or_hybrid") {
+        risk_flags.push("on_site_or_hybrid".to_string());
+    }
+    if text.contains("unclear") || opportunity.description_text.is_none() {
+        risk_flags.push("unclear_scope".to_string());
+    }
+    risk_flags.sort();
+    risk_flags.dedup();
+
+    let primary_fit_score = [
+        opportunity.title.as_deref().unwrap_or(""),
+        opportunity.description_text.as_deref().unwrap_or(""),
+    ]
+    .join(" ")
+    .to_lowercase()
+    .contains("salesforce")
+    .then_some(76)
+    .unwrap_or(58)
+        + if text.contains("architect") || text.contains("automation") {
+            12
+        } else {
+            0
+        };
+
+    let oe_fit_score = if remote_confirmed {
+        72 - (risk_flags.len() as i64 * 8)
+    } else {
+        0
+    }
+    .clamp(0, 100);
+
+    let recommended_track = if !remote_confirmed && primary_fit_score >= 75 {
+        "primary"
+    } else if risk_flags.iter().any(|flag| {
+        matches!(
+            flag.as_str(),
+            "conflict_risk" | "strict_availability" | "unclear_scope"
+        )
+    }) {
+        "manual_review"
+    } else if primary_fit_score >= 75 && oe_fit_score >= 75 {
+        "both"
+    } else if primary_fit_score >= 75 {
+        "primary"
+    } else if oe_fit_score >= 75 {
+        "oe"
+    } else {
+        "skip"
+    };
+
+    json!({
+        "primary_fit_score": primary_fit_score.clamp(0, 100),
+        "oe_fit_score": oe_fit_score,
+        "recommended_track": recommended_track,
+        "score_reason": "Heuristic advisory score. Re-score with the LLM for a fuller criteria-based explanation.",
+        "risk_flags": risk_flags,
+        "skip_recommendation": if remote_confirmed {
+            serde_json::Value::Null
+        } else {
+            json!("OE reject: remote work is not clearly confirmed.")
+        }
+    })
+}
+
+fn detect_risk_flags(text: &str) -> Vec<String> {
+    let mut flags = vec![];
+    if text.contains("hybrid") || text.contains("on-site") || text.contains("onsite") {
+        flags.push("on_site_or_hybrid".to_string());
+    }
+    if text.contains("meetings") || text.contains("standup") || text.contains("stakeholder") {
+        flags.push("heavy_meetings".to_string());
+    }
+    if text.contains("on-call") || text.contains("on call") || text.contains("pager") {
+        flags.push("on_call".to_string());
+    }
+    if text.contains("sole owner")
+        || text.contains("single owner")
+        || text.contains("own end-to-end")
+    {
+        flags.push("sole_owner".to_string());
+    }
+    if text.contains("client-facing")
+        || text.contains("client facing")
+        || text.contains("customer-facing")
+    {
+        flags.push("client_facing".to_string());
+    }
+    if text.contains("core hours") || text.contains("strict availability") || text.contains("9am") {
+        flags.push("strict_availability".to_string());
+    }
+    if text.contains("travel") {
+        flags.push("heavy_travel".to_string());
+    }
+    if text.contains("conflict") || text.contains("non-compete") || text.contains("confidential") {
+        flags.push("conflict_risk".to_string());
+    }
+    flags
+}
+
+fn enforce_oe_remote_requirement(opportunity: &mut EmploymentOpportunity) {
+    let remote_confirmed = opportunity
+        .remote_type
+        .as_ref()
+        .map(|value| value.eq_ignore_ascii_case("remote"))
+        .unwrap_or(false);
+
+    if remote_confirmed {
+        return;
+    }
+
+    opportunity.oe_fit_score = Some(0);
+    if !opportunity
+        .risk_flags
+        .iter()
+        .any(|flag| flag == "on_site_or_hybrid")
+    {
+        opportunity.risk_flags.push("on_site_or_hybrid".to_string());
+    }
+    opportunity.skip_recommendation =
+        Some("OE reject: remote work is not clearly confirmed.".to_string());
+    if matches!(
+        opportunity.recommended_track.as_deref(),
+        Some("oe") | Some("both")
+    ) {
+        opportunity.recommended_track = Some("manual_review".to_string());
+    }
+}
+
+fn clamp_score(value: i64) -> i64 {
+    value.clamp(0, 100)
+}
+
+fn clean_score_text(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn is_known_risk_flag(value: &str) -> bool {
+    matches!(
+        value,
+        "on_site_or_hybrid"
+            | "heavy_meetings"
+            | "on_call"
+            | "sole_owner"
+            | "client_facing"
+            | "strict_availability"
+            | "heavy_travel"
+            | "conflict_risk"
+            | "unclear_scope"
+    )
 }
 
 #[derive(Clone)]

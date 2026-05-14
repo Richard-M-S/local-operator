@@ -29,8 +29,15 @@ pub struct CreateEmploymentOpportunityRequest {
     pub description_text: Option<String>,
     pub extracted_json: Option<Value>,
     pub fit_score: Option<i64>,
+    pub primary_fit_score: Option<i64>,
+    pub oe_fit_score: Option<i64>,
+    pub recommended_track: Option<String>,
+    pub score_reason: Option<String>,
+    #[serde(default)]
+    pub risk_flags: Vec<String>,
     pub status: Option<EmploymentOpportunityStatus>,
     pub skip_reason: Option<String>,
+    pub skip_recommendation: Option<String>,
     pub source_artifact_id: Option<Uuid>,
 }
 
@@ -241,10 +248,16 @@ async fn create_opportunity_for_profile_id(
         description_text: req.description_text,
         extracted_json: req.extracted_json,
         fit_score: req.fit_score,
+        primary_fit_score: req.primary_fit_score,
+        oe_fit_score: req.oe_fit_score,
+        recommended_track: req.recommended_track,
+        score_reason: req.score_reason,
+        risk_flags: req.risk_flags,
         status: req
             .status
             .unwrap_or(EmploymentOpportunityStatus::Discovered),
         skip_reason: req.skip_reason,
+        skip_recommendation: req.skip_recommendation,
         source_artifact_id: req.source_artifact_id,
         first_seen_at: now,
         last_seen_at: now,
