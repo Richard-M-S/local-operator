@@ -9,6 +9,7 @@ pub struct OpTask {
     pub task_type: String,
     pub name: String,
     pub description: Option<String>,
+    pub input_json: serde_json::Value,
     pub status: OpTaskStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
@@ -52,6 +53,23 @@ pub struct TaskArtifact {
     pub location: Option<String>,
     pub created_at: DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
+    pub content_text: Option<String>,
+    pub content_json: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ArtifactSearch {
+    pub run_id: Option<Uuid>,
+    pub task_id: Option<Uuid>,
+    pub artifact_type: Option<String>,
+    pub source_url: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadUrlInput {
+    pub url: String,
 }
 
 /// Lifecycle state for a saved task definition.

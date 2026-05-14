@@ -1,0 +1,2 @@
+ALTER TABLE op_tasks
+ADD COLUMN input_json TEXT NOT NULL DEFAULT '{}';

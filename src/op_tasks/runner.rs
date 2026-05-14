@@ -1,4 +1,7 @@
-use crate::op_tasks::models::{OpTask, OpTaskRun, OpTaskRunStatus, OpWorkItem, TaskArtifact};
+use crate::op_tasks::models::{
+    OpTask, OpTaskRun, OpTaskRunStatus, OpWorkItem, ReadUrlInput, TaskArtifact,
+};
+use crate::readers::ReaderService;
 use crate::services::llm_service::LlmService;
 use crate::tools::registry::ToolRegistry;
 use anyhow::Context;
@@ -10,14 +13,21 @@ use uuid::Uuid;
 pub struct OpTaskRunner {
     tools: ToolRegistry,
     llm: Option<LlmService>,
+    readers: ReaderService,
     summary_model: String,
 }
 
 impl OpTaskRunner {
-    pub fn new(tools: ToolRegistry, llm: Option<LlmService>, summary_model: String) -> Self {
+    pub fn new(
+        tools: ToolRegistry,
+        llm: Option<LlmService>,
+        readers: ReaderService,
+        summary_model: String,
+    ) -> Self {
         Self {
             tools,
             llm,
+            readers,
             summary_model,
         }
     }
@@ -28,25 +38,26 @@ impl OpTaskRunner {
         run.started_at = Some(started_at);
 
         match task.task_type.as_str() {
-            "system.status_report" => self.run_status_report(&mut run).await?,
+            "system.status_report" => self.run_status_report(&task, run).await,
+            "reader.read_url" => self.run_read_url(&task, run).await,
             _ => {
                 let message = format!("unsupported task type: {}", task.task_type);
                 run.status = OpTaskRunStatus::Failed;
                 run.completed_at = Some(Utc::now());
                 run.summary = Some(message);
-                return Ok(run);
+                Ok(run)
             }
         }
-
-        run.status = OpTaskRunStatus::Succeeded;
-        run.completed_at = Some(Utc::now());
-        Ok(run)
     }
 
-    async fn run_status_report(&self, run: &mut OpTaskRun) -> anyhow::Result<()> {
+    async fn run_status_report(
+        &self,
+        _task: &OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
         let now = Utc::now();
         let work_item_id = {
-            let item = self.ensure_work_item(run, "status_check", "Collect system status");
+            let item = self.ensure_work_item(&mut run, "status_check", "Collect system status");
             item.status = OpTaskRunStatus::Running;
             item.started_at = Some(now);
             item.id
@@ -107,10 +118,77 @@ impl OpTaskRunner {
                 "tool": result.tool,
                 "output": result.output,
             })),
+            content_text: None,
+            content_json: None,
         });
 
         run.summary = Some(summary);
-        Ok(())
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        Ok(run)
+    }
+
+    async fn run_read_url(&self, task: &OpTask, mut run: OpTaskRun) -> anyhow::Result<OpTaskRun> {
+        let input: ReadUrlInput = serde_json::from_value(task.input_json.clone())
+            .context("invalid reader.read_url input_json")?;
+
+        let mut work_item = OpWorkItem {
+            id: Uuid::new_v4(),
+            run_id: run.id,
+            name: "read_url".to_string(),
+            description: Some("Read and extract text from URL".to_string()),
+            order: 1,
+            status: OpTaskRunStatus::Running,
+            started_at: Some(Utc::now()),
+            completed_at: None,
+            details: None,
+        };
+
+        let result = self
+            .readers
+            .read_url(input.url.clone())
+            .await
+            .context("failed to read URL")?;
+
+        work_item.status = OpTaskRunStatus::Succeeded;
+        work_item.completed_at = Some(Utc::now());
+
+        let title = result
+            .title
+            .clone()
+            .unwrap_or_else(|| "read_url_result".to_string());
+        let cleaned_text = result.cleaned_text.clone();
+
+        let artifact = TaskArtifact {
+            id: Uuid::new_v4(),
+            run_id: run.id,
+            work_item_id: Some(work_item.id),
+            name: title,
+            artifact_type: "readable_web_page".to_string(),
+            location: Some(input.url.clone()),
+            created_at: Utc::now(),
+            metadata: Some(json!({
+                "source_url": input.url.clone(),
+                "title": result.title.clone(),
+                "detected_type": result.detected_type.clone(),
+                "text_length": result.cleaned_text.len()
+            })),
+            content_text: Some(cleaned_text.clone()),
+            content_json: Some(json!({
+                "raw_text": result.raw_text,
+                "cleaned_text": cleaned_text,
+                "title": result.title,
+                "source_url": input.url
+            })),
+        };
+
+        run.work_items.push(work_item);
+        run.artifacts.push(artifact);
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some("Read URL and extracted readable text.".to_string());
+
+        Ok(run)
     }
 
     fn ensure_work_item<'a>(

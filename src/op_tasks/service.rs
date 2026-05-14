@@ -1,9 +1,12 @@
-use crate::op_tasks::models::{OpTask, OpTaskRun, OpTaskRunStatus, OpTaskStatus, OpWorkItem};
+use crate::op_tasks::models::{
+    ArtifactSearch, OpTask, OpTaskRun, OpTaskRunStatus, OpTaskStatus, OpWorkItem, TaskArtifact,
+};
 use crate::{
     error::AppError,
     op_tasks::{OpTaskRepository, OpTaskRunner},
 };
 use chrono::Utc;
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -30,6 +33,7 @@ impl OpTaskService {
             task_type: task_type.trim().to_string(),
             name: name.trim().to_string(),
             description,
+            input_json: serde_json::json!({}),
             status: OpTaskStatus::Active,
             created_at: Utc::now(),
             updated_at: None,
@@ -46,6 +50,7 @@ impl OpTaskService {
         task_type: String,
         name: String,
         description: Option<String>,
+        input_json: Value,
         enabled: bool,
     ) -> Result<OpTask, AppError> {
         self.validate_task_input(&task_type, &name, &description)?;
@@ -55,6 +60,7 @@ impl OpTaskService {
             task_type: task_type.trim().to_string(),
             name: name.trim().to_string(),
             description,
+            input_json,
             status: if enabled {
                 OpTaskStatus::Active
             } else {
@@ -66,6 +72,23 @@ impl OpTaskService {
 
         self.repo
             .create_op_task(task)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+    pub async fn get_artifact(&self, artifact_id: Uuid) -> Result<TaskArtifact, AppError> {
+        self.repo
+            .get_artifact(artifact_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound("Op Task artifact not found".to_string()))
+    }
+
+    pub async fn list_artifacts(
+        &self,
+        search: ArtifactSearch,
+    ) -> Result<Vec<TaskArtifact>, AppError> {
+        self.repo
+            .list_artifacts(search)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
@@ -157,52 +180,21 @@ impl OpTaskService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        for artifact in &executed_run.artifacts {
-            self.repo
-                .save_artifact(artifact.clone())
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-        }
-
         Ok(executed_run)
     }
 
     pub async fn get_task_run_summary(&self, run_id: Uuid) -> Result<Option<OpTaskRun>, AppError> {
-        let run = self
-            .repo
+        self.repo
             .get_task_run(run_id)
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-
-        match run {
-            Some(mut run) => {
-                run.artifacts = self
-                    .repo
-                    .list_artifacts_for_run(run.id)
-                    .await
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                Ok(Some(run))
-            }
-            None => Ok(None),
-        }
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn list_task_history(&self, task_id: Uuid) -> Result<Vec<OpTaskRun>, AppError> {
-        let mut runs = self
-            .repo
+        self.repo
             .list_task_runs_for_task(task_id)
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-
-        for run in &mut runs {
-            run.artifacts = self
-                .repo
-                .list_artifacts_for_run(run.id)
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-        }
-
-        Ok(runs)
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub fn is_task_allowed(&self, task: &OpTask) -> bool {
@@ -252,20 +244,23 @@ impl OpTaskService {
 
         Ok(())
     }
-    
+
     pub async fn get_run(&self, run_id: Uuid) -> Result<OpTaskRun, AppError> {
-    self.repo
-        .get_task_run(run_id)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .ok_or_else(|| AppError::NotFound("Op Task run not found".to_string()))
+        self.repo
+            .get_task_run(run_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound(format!("Op Task run {} not found", run_id)))
     }
-    
+
     pub async fn list_runs_for_task(&self, task_id: Uuid) -> Result<Vec<OpTaskRun>, AppError> {
+        self.get_op_task(task_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("task {} not found", task_id)))?;
+
         self.repo
             .list_task_runs_for_task(task_id)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
-
 }

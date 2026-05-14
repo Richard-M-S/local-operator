@@ -48,12 +48,16 @@ impl AppState {
             llm_router.clone(),
         );
 
-        let op_task_repo = OpTaskRepository::new(db.clone());
-        let op_task_runner =
-            OpTaskRunner::new(tools.clone(), llm.clone(), config.llm.model.clone());
-        let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
-
         let readers = ReaderService::new();
+
+        let op_task_repo = OpTaskRepository::new(db.clone());
+        let op_task_runner = OpTaskRunner::new(
+            tools.clone(),
+            llm.clone(),
+            readers.clone(),
+            config.llm.model.clone(),
+        );
+        let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
 
         let context_repo = ContextRepository::new(db.clone());
         let context = ContextService::new(context_repo);

@@ -18,8 +18,19 @@ pub fn router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/api/status", get(status::status))
         .route("/api/op-tasks", post(op_tasks::create).get(op_tasks::list))
+        .route("/api/op-tasks/:id", get(op_tasks::get))
         .route("/api/op-tasks/:id/run", post(op_tasks::run))
         .route("/api/op-tasks/:id/runs", get(op_tasks::list_runs))
+        .route("/api/op-task-artifacts", get(op_tasks::list_artifacts))
+        .route(
+            "/api/op-task-artifacts/:id/content",
+            get(op_tasks::get_artifact_content),
+        )
+        .route(
+            "/api/op-task-artifacts/:id/save-context",
+            post(op_tasks::save_artifact_context),
+        )
+        .route("/api/op-task-artifacts/:id", get(op_tasks::get_artifact))
         .route("/api/op-task-runs/:id", get(op_tasks::get_run))
         .route("/api/operator/command", post(operator::command))
         .route("/api/operator/chat", post(operator::chat))
