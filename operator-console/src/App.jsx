@@ -649,6 +649,8 @@ export default function App() {
   const [opportunityDetailTab, setOpportunityDetailTab] = useState("summary");
   const [artifactDetailTab, setArtifactDetailTab] = useState("text");
   const [activeMainTab, setActiveMainTab] = useState("opportunities");
+  const [coverLetterDirection, setCoverLetterDirection] = useState("");
+  const [coverLetterDraft, setCoverLetterDraft] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState(() =>
     normalizeStatusFilterValue(readStoredSetting(STORAGE_KEYS.statusFilter, "")),
@@ -1126,6 +1128,32 @@ export default function App() {
     }
   }
 
+  async function generateCoverLetter(id) {
+    setActionLoading(`cover-letter-${id}`);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(
+        apiBase,
+        token,
+        profileApiPath(selectedProfileId, `/opportunities/${id}/cover-letter`),
+        {
+          method: "POST",
+          body: JSON.stringify({ direction: coverLetterDirection }),
+        },
+      );
+
+      setCoverLetterDraft(response?.cover_letter || "");
+      setOpportunityDetailTab("coverLetter");
+      setNotice("Generated cover letter draft.");
+    } catch (err) {
+      setError(err.message || "Failed to generate cover letter.");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
   async function archiveOpportunity(id, reason = "") {
     setActionLoading(`archive-${id}`);
     setError("");
@@ -1253,6 +1281,11 @@ export default function App() {
   useEffect(() => {
     setCriteriaDraft(selectedProfile?.criteria || "");
   }, [selectedProfile?.id, selectedProfile?.criteria]);
+
+  useEffect(() => {
+    setCoverLetterDraft("");
+    setCoverLetterDirection("");
+  }, [selectedOpportunity?.id]);
 
   return (
     <div style={styles.page}>
@@ -1467,6 +1500,14 @@ export default function App() {
                   opportunity={selectedOpportunity}
                   activeTab={opportunityDetailTab}
                   onTabChange={setOpportunityDetailTab}
+                  onParse={() => parseOpportunity(selectedOpportunity.id)}
+                  onScore={() => scoreOpportunity(selectedOpportunity.id)}
+                  coverLetterDirection={coverLetterDirection}
+                  onCoverLetterDirectionChange={setCoverLetterDirection}
+                  coverLetterDraft={coverLetterDraft}
+                  onCoverLetterDraftChange={setCoverLetterDraft}
+                  onGenerateCoverLetter={() => generateCoverLetter(selectedOpportunity.id)}
+                  actionLoading={actionLoading}
                 />
               ) : (
                 <p style={styles.muted}>Select an opportunity to review parsed fields and scoring.</p>
@@ -1620,7 +1661,19 @@ function RiskFlags({ flags }) {
   );
 }
 
-function OpportunityDetail({ opportunity, activeTab, onTabChange }) {
+function OpportunityDetail({
+  opportunity,
+  activeTab,
+  onTabChange,
+  onParse,
+  onScore,
+  coverLetterDirection,
+  onCoverLetterDirectionChange,
+  coverLetterDraft,
+  onCoverLetterDraftChange,
+  onGenerateCoverLetter,
+  actionLoading,
+}) {
   return (
     <div>
       <div style={styles.tabs}>
@@ -1636,6 +1689,29 @@ function OpportunityDetail({ opportunity, activeTab, onTabChange }) {
         <TabButton active={activeTab === "source"} onClick={() => onTabChange("source")}>
           Source Artifact
         </TabButton>
+        <TabButton active={activeTab === "coverLetter"} onClick={() => onTabChange("coverLetter")}>
+          Cover Letter
+        </TabButton>
+      </div>
+
+      <div style={styles.actions}>
+        <button
+          style={styles.buttonSecondary}
+          onClick={onParse}
+          disabled={actionLoading === `parse-${opportunity.id}`}
+        >
+          {actionLoading === `parse-${opportunity.id}` ? "Parsing…" : "Parse"}
+        </button>
+        <button
+          style={styles.buttonSecondary}
+          onClick={onScore}
+          disabled={actionLoading === `score-${opportunity.id}`}
+        >
+          {actionLoading === `score-${opportunity.id}` ? "Scoring…" : "Score"}
+        </button>
+        <button style={styles.button} onClick={() => onTabChange("coverLetter")}>
+          Cover Letter
+        </button>
       </div>
 
       {activeTab === "summary" ? (
@@ -1675,6 +1751,38 @@ function OpportunityDetail({ opportunity, activeTab, onTabChange }) {
           <Field label="Source URL" value={opportunity.source_url} />
           <Field label="First Seen" value={safeDate(opportunity.first_seen_at)} />
           <Field label="Last Seen" value={safeDate(opportunity.last_seen_at)} />
+        </div>
+      ) : null}
+
+      {activeTab === "coverLetter" ? (
+        <div style={styles.list}>
+          <div>
+            <div style={styles.fieldLabel}>Direction</div>
+            <textarea
+              style={styles.textarea}
+              value={coverLetterDirection}
+              onChange={(e) => onCoverLetterDirectionChange(e.target.value)}
+              placeholder="Tone, points to emphasize, constraints, recipient details, or anything to avoid..."
+            />
+          </div>
+          <div style={styles.actions}>
+            <button
+              style={styles.button}
+              onClick={onGenerateCoverLetter}
+              disabled={actionLoading === `cover-letter-${opportunity.id}`}
+            >
+              {actionLoading === `cover-letter-${opportunity.id}` ? "Generating…" : "Generate Draft"}
+            </button>
+          </div>
+          <div>
+            <div style={styles.fieldLabel}>Draft</div>
+            <textarea
+              style={{ ...styles.textarea, minHeight: 320 }}
+              value={coverLetterDraft}
+              onChange={(e) => onCoverLetterDraftChange(e.target.value)}
+              placeholder="Generated cover letter draft will appear here."
+            />
+          </div>
         </div>
       ) : null}
     </div>
