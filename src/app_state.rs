@@ -1,7 +1,7 @@
 use crate::adapters::llm::LlmClient;
 use crate::config::AppConfig;
 use crate::context::{ContextRepository, ContextService};
-use crate::domains::employment::{EmploymentContextService, EmploymentRepository};
+use crate::domains::employment::{EmploymentContextService, EmploymentOpportunityService, EmploymentRepository};
 use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService};
 use crate::readers::ReaderService;
 use crate::services::{
@@ -27,7 +27,7 @@ pub struct AppState {
     #[allow(dead_code)]
     pub readers: ReaderService,
     pub context: ContextService,
-    pub employment_repo: EmploymentRepository,
+    pub employment: EmploymentOpportunityService,
     pub employment_context: EmploymentContextService,
 }
 
@@ -69,6 +69,11 @@ impl AppState {
         let context = ContextService::new(context_repo);
 
         let employment_repo = EmploymentRepository::new(db.clone());
+        let employment = EmploymentOpportunityService::new(
+            employment_repo,
+            op_tasks.clone(),
+            llm.clone(),
+        );
         let employment_context = EmploymentContextService::new(context.clone());
 
         Ok(Self {
@@ -83,7 +88,7 @@ impl AppState {
             op_tasks,
             readers,
             context,
-            employment_repo,
+            employment,
             employment_context,
         })
     }
