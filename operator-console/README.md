@@ -1,16 +1,34 @@
-# React + Vite
+# Operator Console
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React/Vite console for Local Operator.
 
-Currently, two official plugins are available:
+## Run
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm run dev
+```
 
-## React Compiler
+The console is designed to talk to the Local Operator API, usually:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```text
+http://localhost:8080
+```
 
-## Expanding the ESLint configuration
+API base, bearer token, artifact type filter, and opportunity status filter are stored in browser local storage.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Current Features
+
+- read a job URL into a readable artifact
+- read a job URL and create an employment opportunity
+- review artifacts by readable text, raw JSON, and source metadata
+- review opportunities by summary, parsed fields, raw JSON, and source artifact
+- create, parse, and score opportunities from artifacts
+- warn when an artifact or source URL already has a matching opportunity
+- status and artifact type filter presets
+- daily review dashboard
+
+## Build
+
+```bash
+npm run build
+```
