@@ -9,6 +9,7 @@ use crate::app_state::AppState;
 pub mod audit;
 pub mod auth;
 pub mod context;
+pub mod employment;
 pub mod health;
 pub mod op_tasks;
 pub mod openai_compat;
@@ -41,6 +42,26 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tools/execute", post(operator::execute_tool))
         .route("/api/audit/recent", get(audit::recent))
         .route("/v1/models", get(openai_compat::models))
+        .route(
+            "/api/employment/opportunities",
+            get(employment::list_opportunities).post(employment::create_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/:id",
+            get(employment::get_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/:id/parse",
+            post(employment::parse_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/:id/score",
+            post(employment::score_opportunity),
+        )
+        .route(
+            "/api/employment/opportunities/from-artifact/:artifact_id",
+            post(employment::create_opportunity_from_artifact),
+        )
         .route(
             "/v1/chat/completions",
             post(openai_compat::chat_completions),

@@ -49,4 +49,41 @@ impl LlmService {
 
         self.ask_model(model, system, &prompt).await
     }
+
+    pub async fn parse_job_opportunity(
+        &self,
+        model: &str,
+        job_text: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        let system = r#"
+You are an expert job posting parser. Extract structured information from job descriptions.
+Return only valid JSON with the following fields (use null for missing information):
+- title: string or null
+- company: string or null  
+- location: string or null
+- remote_type: "Remote" | "Hybrid" | "On-site" | null
+- salary_min: number or null
+- salary_max: number or null
+- description_text: string or null (cleaned up version)
+- requirements: array of strings or null
+- benefits: array of strings or null
+"#;
+
+        let prompt = format!(
+            r#"
+Parse this job posting text and extract the structured information as JSON:
+
+{job_text}
+
+Return only the JSON object, no additional text.
+"#,
+            job_text = job_text
+        );
+
+        let response = self.ask_model(model, system, &prompt).await?;
+        
+        // Try to parse as JSON
+        serde_json::from_str(&response)
+            .map_err(|e| AppError::Internal(format!("Failed to parse LLM response as JSON: {}", e)))
+    }
 }
