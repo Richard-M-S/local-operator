@@ -1,8 +1,10 @@
 use axum::{
+    http::{HeaderValue, Method},
     middleware,
     routing::{get, post},
     Router,
 };
+use tower_http::cors::CorsLayer;
 
 use crate::app_state::AppState;
 
@@ -71,8 +73,25 @@ pub fn router(state: AppState) -> Router {
             auth::require_api_token,
         ));
 
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
+            "http://192.168.0.100:5173".parse::<HeaderValue>().unwrap(),
+            "http://100.71.130.87:5173".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(tower_http::cors::Any);
+
     Router::new()
         .route("/health", get(health::health))
         .merge(protected_routes)
         .with_state(state)
+        .layer(cors)
 }

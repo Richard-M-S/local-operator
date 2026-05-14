@@ -127,6 +127,7 @@ fn friendly_or_id(entity: &HaEntitySummary) -> String {
         .unwrap_or_else(|| entity.entity_id.clone())
 }
 
+#[derive(Clone)]
 pub struct HaSummaryTool {
     client: HomeAssistantClient,
 }
@@ -154,6 +155,7 @@ impl Tool for HaSummaryTool {
     }
 }
 
+#[derive(Clone)]
 pub struct HaStatesTool {
     client: HomeAssistantClient,
 }
@@ -186,6 +188,7 @@ impl Tool for HaStatesTool {
     }
 }
 
+#[derive(Clone)]
 pub struct HaGetEntityTool {
     client: HomeAssistantClient,
 }
@@ -215,6 +218,7 @@ impl Tool for HaGetEntityTool {
     }
 }
 
+#[derive(Clone)]
 pub struct HaSearchTool {
     client: HomeAssistantClient,
 }
@@ -262,6 +266,7 @@ impl Tool for HaSearchTool {
     }
 }
 
+#[derive(Clone)]
 pub struct HaOverviewTool {
     client: HomeAssistantClient,
 }
@@ -417,6 +422,7 @@ impl Tool for HaOverviewTool {
     }
 }
 
+#[derive(Clone)]
 pub struct HaEnergyHvacSnapshotTool {
     client: HomeAssistantClient,
 }

@@ -49,7 +49,10 @@ impl EmploymentOpportunityService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn get_opportunity(&self, id: Uuid) -> Result<Option<EmploymentOpportunity>, AppError> {
+    pub async fn get_opportunity(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<EmploymentOpportunity>, AppError> {
         self.repository
             .get_opportunity(id)
             .await
@@ -70,20 +73,43 @@ impl EmploymentOpportunityService {
         &self,
         artifact_id: Uuid,
     ) -> Result<EmploymentOpportunity, AppError> {
-        // Get the artifact
-        let artifact = self
-            .op_tasks
-            .get_artifact(artifact_id)
-            .await?;
+        let artifact = self.op_tasks.get_artifact(artifact_id).await?;
 
-        // Check if it's a readable_web_page artifact
         if artifact.artifact_type != "readable_web_page" {
             return Err(AppError::BadRequest(
                 "Artifact is not a readable_web_page".to_string(),
             ));
         }
 
-        // Extract title: content_json.title or artifact.name
+        let source_url = artifact
+            .location
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("Artifact missing location".to_string()))?;
+
+        if let Some(existing) = self
+            .repository
+            .list_opportunities(EmploymentOpportunitySearch {
+                source_artifact_id: Some(artifact.id),
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .into_iter()
+            .next()
+        {
+            return Ok(existing);
+        }
+
+        if let Some(existing) = self
+            .repository
+            .find_opportunity_by_source_url(&source_url)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+        {
+            return Ok(existing);
+        }
+
         let title = artifact
             .content_json
             .as_ref()
@@ -92,16 +118,9 @@ impl EmploymentOpportunityService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| artifact.name.clone());
 
-        // Create the opportunity
-        let mut opportunity = EmploymentOpportunity::new_discovered(
-            artifact.location.ok_or_else(|| {
-                AppError::BadRequest("Artifact missing location".to_string())
-            })?,
-            None, // source_name
-            Some(artifact.id),
-        );
+        let mut opportunity =
+            EmploymentOpportunity::new_discovered(source_url, None, Some(artifact.id));
 
-        // Set additional fields
         opportunity.title = Some(title);
         opportunity.description_text = artifact.content_text;
         opportunity.status = EmploymentOpportunityStatus::Discovered;
@@ -112,7 +131,10 @@ impl EmploymentOpportunityService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn parse_opportunity(&self, opportunity_id: Uuid) -> Result<EmploymentOpportunity, AppError> {
+    pub async fn parse_opportunity(
+        &self,
+        opportunity_id: Uuid,
+    ) -> Result<EmploymentOpportunity, AppError> {
         // Get the opportunity
         let mut opportunity = self
             .get_opportunity(opportunity_id)
@@ -120,11 +142,14 @@ impl EmploymentOpportunityService {
             .ok_or_else(|| AppError::NotFound("Employment opportunity not found".to_string()))?;
 
         // Check if it has description_text
-        let description_text = opportunity.description_text.as_ref()
-            .ok_or_else(|| AppError::BadRequest("Opportunity has no description_text to parse".to_string()))?;
+        let description_text = opportunity.description_text.as_ref().ok_or_else(|| {
+            AppError::BadRequest("Opportunity has no description_text to parse".to_string())
+        })?;
 
         // Use LLM to parse the job details
-        let llm_service = self.llm.as_ref()
+        let llm_service = self
+            .llm
+            .as_ref()
             .ok_or_else(|| AppError::Internal("LLM service not available".to_string()))?;
         let parsed: serde_json::Value = llm_service
             .parse_job_opportunity("qwen2.5:14b", description_text)
@@ -167,7 +192,10 @@ impl EmploymentOpportunityService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn score_opportunity(&self, opportunity_id: Uuid) -> Result<EmploymentOpportunity, AppError> {
+    pub async fn score_opportunity(
+        &self,
+        opportunity_id: Uuid,
+    ) -> Result<EmploymentOpportunity, AppError> {
         // Get the opportunity
         let mut opportunity = self
             .get_opportunity(opportunity_id)

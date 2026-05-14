@@ -95,6 +95,7 @@ pub struct EmploymentOpportunitySearch {
     pub title: Option<String>,
     pub remote_type: Option<String>,
     pub min_fit_score: Option<i64>,
+    pub source_url: Option<String>,
     pub source_artifact_id: Option<Uuid>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

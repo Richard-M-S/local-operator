@@ -81,7 +81,7 @@ Return only the JSON object, no additional text.
         );
 
         let response = self.ask_model(model, system, &prompt).await?;
-        
+
         // Try to parse as JSON
         serde_json::from_str(&response)
             .map_err(|e| AppError::Internal(format!("Failed to parse LLM response as JSON: {}", e)))

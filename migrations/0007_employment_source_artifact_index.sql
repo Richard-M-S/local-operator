@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS idx_employment_opportunities_source_artifact_id
+ON employment_opportunities(source_artifact_id);

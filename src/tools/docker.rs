@@ -10,6 +10,7 @@ use crate::{
 
 use super::registry::Tool;
 
+#[derive(Clone)]
 pub struct DockerListContainersTool;
 
 impl DockerListContainersTool {
@@ -33,7 +34,7 @@ impl Tool for DockerListContainersTool {
         let docker = Docker::connect_with_local_defaults()
             .map_err(|e| AppError::Internal(format!("docker connect failed: {e}")))?;
 
-        let containers = docker
+        let containers: Vec<bollard::models::ContainerSummary> = docker
             .list_containers(Some(ListContainersOptions::<String> {
                 all: true,
                 ..Default::default()

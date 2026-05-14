@@ -25,20 +25,65 @@ pub trait Tool: Send + Sync {
     fn descriptor(&self) -> ToolDescriptor;
     async fn execute(&self, args: Value) -> Result<Value, AppError>;
 }
+#[derive(Clone)]
+pub enum ToolEnum {
+    SystemStatus(SystemStatusTool),
+    DockerListContainers(DockerListContainersTool),
+    HaSummary(HaSummaryTool),
+    HaStates(HaStatesTool),
+    HaGetEntity(HaGetEntityTool),
+    HaSearch(HaSearchTool),
+    HaOverview(HaOverviewTool),
+    HaEnergyHvacSnapshot(HaEnergyHvacSnapshotTool),
+}
 
+#[async_trait]
+impl Tool for ToolEnum {
+    fn descriptor(&self) -> ToolDescriptor {
+        match self {
+            ToolEnum::SystemStatus(t) => t.descriptor(),
+            ToolEnum::DockerListContainers(t) => t.descriptor(),
+            ToolEnum::HaSummary(t) => t.descriptor(),
+            ToolEnum::HaStates(t) => t.descriptor(),
+            ToolEnum::HaGetEntity(t) => t.descriptor(),
+            ToolEnum::HaSearch(t) => t.descriptor(),
+            ToolEnum::HaOverview(t) => t.descriptor(),
+            ToolEnum::HaEnergyHvacSnapshot(t) => t.descriptor(),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value, AppError> {
+        match self {
+            ToolEnum::SystemStatus(t) => t.execute(args).await,
+            ToolEnum::DockerListContainers(t) => t.execute(args).await,
+            ToolEnum::HaSummary(t) => t.execute(args).await,
+            ToolEnum::HaStates(t) => t.execute(args).await,
+            ToolEnum::HaGetEntity(t) => t.execute(args).await,
+            ToolEnum::HaSearch(t) => t.execute(args).await,
+            ToolEnum::HaOverview(t) => t.execute(args).await,
+            ToolEnum::HaEnergyHvacSnapshot(t) => t.execute(args).await,
+        }
+    }
+}
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+    tools: Arc<RwLock<HashMap<String, ToolEnum>>>,
 }
 
 impl ToolRegistry {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let registry = Self::default();
 
-        registry.register(SystemStatusTool::new()).await;
+        registry
+            .register(ToolEnum::SystemStatus(SystemStatusTool::new()))
+            .await;
 
         if config.docker.enabled {
-            registry.register(DockerListContainersTool::new()).await;
+            registry
+                .register(ToolEnum::DockerListContainers(
+                    DockerListContainersTool::new(),
+                ))
+                .await;
         }
 
         if config.homeassistant.enabled {
@@ -48,29 +93,34 @@ impl ToolRegistry {
                 config.homeassistant.timeout_seconds,
             )?;
 
-            registry.register(HaSummaryTool::new(client.clone())).await;
-            registry.register(HaStatesTool::new(client.clone())).await;
             registry
-                .register(HaGetEntityTool::new(client.clone()))
+                .register(ToolEnum::HaSummary(HaSummaryTool::new(client.clone())))
                 .await;
-            registry.register(HaSearchTool::new(client.clone())).await;
-            registry.register(HaOverviewTool::new(client.clone())).await;
             registry
-                .register(HaEnergyHvacSnapshotTool::new(client.clone()))
+                .register(ToolEnum::HaStates(HaStatesTool::new(client.clone())))
+                .await;
+            registry
+                .register(ToolEnum::HaGetEntity(HaGetEntityTool::new(client.clone())))
+                .await;
+            registry
+                .register(ToolEnum::HaSearch(HaSearchTool::new(client.clone())))
+                .await;
+            registry
+                .register(ToolEnum::HaOverview(HaOverviewTool::new(client.clone())))
+                .await;
+            registry
+                .register(ToolEnum::HaEnergyHvacSnapshot(
+                    HaEnergyHvacSnapshotTool::new(client.clone()),
+                ))
                 .await;
         }
 
         Ok(registry)
     }
 
-    pub async fn register<T>(&self, tool: T)
-    where
-        T: Tool + 'static,
-    {
-        self.tools
-            .write()
-            .await
-            .insert(tool.descriptor().name.clone(), Arc::new(tool));
+    pub async fn register(&self, tool: ToolEnum) {
+        let name = tool.descriptor().name.clone();
+        self.tools.write().await.insert(name, tool);
     }
 
     pub async fn execute(&self, name: &str, args: Value) -> Result<ToolExecutionResult, AppError> {

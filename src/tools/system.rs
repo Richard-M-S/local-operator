@@ -8,6 +8,7 @@ use crate::{
 
 use super::registry::Tool;
 
+#[derive(Clone)]
 pub struct SystemStatusTool;
 
 impl SystemStatusTool {

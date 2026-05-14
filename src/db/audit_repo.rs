@@ -36,7 +36,7 @@ impl AuditRepo {
     }
 
     pub async fn recent(&self, limit: i64) -> anyhow::Result<Vec<AuditEntry>> {
-        let rows = sqlx::query_as::<_, AuditRow>(
+        let rows: Vec<AuditRow> = sqlx::query_as::<_, AuditRow>(
             r#"
             SELECT request_id, created_at, raw_input, parsed_intent, risk_tier,
                    allowed, actions_json, results_json, final_message

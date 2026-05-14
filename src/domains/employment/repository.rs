@@ -201,6 +201,11 @@ impl EmploymentRepository {
             query.push_bind(min_fit_score);
         }
 
+        if let Some(source_url) = search.source_url {
+            query.push(" AND source_url = ");
+            query.push_bind(source_url);
+        }
+
         if let Some(source_artifact_id) = search.source_artifact_id {
             query.push(" AND source_artifact_id = ");
             query.push_bind(source_artifact_id.to_string());
