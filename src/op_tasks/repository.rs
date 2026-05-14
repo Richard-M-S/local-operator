@@ -18,11 +18,12 @@ impl OpTaskRepository {
         sqlx::query(
             r#"
             INSERT INTO op_tasks (
-                id, task_type, name, description, input_json, status, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                id, profile_id, task_type, name, description, input_json, status, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(task.id.to_string())
+        .bind(task.profile_id.to_string())
         .bind(&task.task_type)
         .bind(&task.name)
         .bind(&task.description)
@@ -39,7 +40,7 @@ impl OpTaskRepository {
     pub async fn get_op_task(&self, task_id: Uuid) -> anyhow::Result<Option<OpTask>> {
         let row = sqlx::query_as::<_, OpTaskRow>(
             r#"
-            SELECT id, task_type, name, description, input_json, status, created_at, updated_at
+            SELECT id, profile_id, task_type, name, description, input_json, status, created_at, updated_at
             FROM op_tasks
             WHERE id = ?1
             "#,
@@ -51,14 +52,16 @@ impl OpTaskRepository {
         Ok(row.map(Into::into))
     }
 
-    pub async fn list_op_tasks(&self) -> anyhow::Result<Vec<OpTask>> {
+    pub async fn list_op_tasks(&self, profile_id: Uuid) -> anyhow::Result<Vec<OpTask>> {
         let rows = sqlx::query_as::<_, OpTaskRow>(
             r#"
-            SELECT id, task_type, name, description, input_json, status, created_at, updated_at
+            SELECT id, profile_id, task_type, name, description, input_json, status, created_at, updated_at
             FROM op_tasks
+            WHERE profile_id = ?1
             ORDER BY created_at DESC
             "#,
         )
+        .bind(profile_id.to_string())
         .fetch_all(&self.pool)
         .await?;
 
@@ -71,11 +74,12 @@ impl OpTaskRepository {
         sqlx::query(
             r#"
             INSERT INTO op_task_runs (
-                id, task_id, status, started_at, completed_at, work_items_json, summary
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                id, profile_id, task_id, status, started_at, completed_at, work_items_json, summary
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
         )
         .bind(run.id.to_string())
+        .bind(run.profile_id.to_string())
         .bind(run.task_id.to_string())
         .bind(run.status.as_str())
         .bind(run.started_at.map(|dt| dt.to_rfc3339()))
@@ -100,14 +104,16 @@ impl OpTaskRepository {
             UPDATE op_task_runs
             SET
                 status = ?1,
-                started_at = ?2,
-                completed_at = ?3,
-                work_items_json = ?4,
-                summary = ?5
-            WHERE id = ?6
+                profile_id = ?2,
+                started_at = ?3,
+                completed_at = ?4,
+                work_items_json = ?5,
+                summary = ?6
+            WHERE id = ?7
             "#,
         )
         .bind(run.status.as_str())
+        .bind(run.profile_id.to_string())
         .bind(run.started_at.map(|dt| dt.to_rfc3339()))
         .bind(run.completed_at.map(|dt| dt.to_rfc3339()))
         .bind(work_items_json)
@@ -128,6 +134,7 @@ impl OpTaskRepository {
             r#"
             SELECT
                 id,
+                profile_id,
                 task_id,
                 status,
                 started_at,
@@ -157,6 +164,7 @@ impl OpTaskRepository {
             r#"
             SELECT
                 id,
+                profile_id,
                 task_id,
                 status,
                 started_at,
@@ -198,12 +206,13 @@ impl OpTaskRepository {
         sqlx::query(
             r#"
             INSERT INTO task_artifacts (
-                id, run_id, work_item_id, name, artifact_type, location, created_at, metadata_json, content_text, content_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                id, profile_id, run_id, work_item_id, name, artifact_type, location, created_at, metadata_json, content_text, content_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO NOTHING
             "#,
         )
         .bind(artifact.id.to_string())
+        .bind(artifact.profile_id.to_string())
         .bind(artifact.run_id.to_string())
         .bind(artifact.work_item_id.map(|uuid| uuid.to_string()))
         .bind(&artifact.name)
@@ -222,7 +231,7 @@ impl OpTaskRepository {
     pub async fn list_artifacts_for_run(&self, run_id: Uuid) -> anyhow::Result<Vec<TaskArtifact>> {
         let rows = sqlx::query_as::<_, TaskArtifactRow>(
             r#"
-            SELECT id, run_id, work_item_id, name, artifact_type, location, created_at, metadata_json, content_text, content_json
+            SELECT id, profile_id, run_id, work_item_id, name, artifact_type, location, created_at, metadata_json, content_text, content_json
             FROM task_artifacts
             WHERE run_id = ?1
             ORDER BY created_at ASC
@@ -240,6 +249,7 @@ impl OpTaskRepository {
             r#"
             SELECT
                 id,
+                profile_id,
                 run_id,
                 work_item_id,
                 name,
@@ -272,6 +282,7 @@ impl OpTaskRepository {
             r#"
             SELECT
                 a.id,
+                a.profile_id,
                 a.run_id,
                 a.work_item_id,
                 a.name,
@@ -299,6 +310,11 @@ impl OpTaskRepository {
         if let Some(run_id) = search.run_id {
             query.push(" AND a.run_id = ");
             query.push_bind(run_id.to_string());
+        }
+
+        if let Some(profile_id) = search.profile_id {
+            query.push(" AND a.profile_id = ");
+            query.push_bind(profile_id.to_string());
         }
 
         if let Some(task_id) = search.task_id {
@@ -333,6 +349,7 @@ impl OpTaskRepository {
 #[derive(FromRow)]
 struct OpTaskRow {
     id: String,
+    profile_id: String,
     task_type: String,
     name: String,
     description: Option<String>,
@@ -346,6 +363,7 @@ impl From<OpTaskRow> for OpTask {
     fn from(row: OpTaskRow) -> Self {
         Self {
             id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
             task_type: row.task_type,
             name: row.name,
             description: row.description,
@@ -361,6 +379,7 @@ impl From<OpTaskRow> for OpTask {
 #[derive(FromRow)]
 struct OpTaskRunRow {
     id: String,
+    profile_id: String,
     task_id: String,
     status: String,
     started_at: Option<String>,
@@ -378,6 +397,7 @@ impl From<OpTaskRunRow> for OpTaskRun {
 
         Self {
             id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
             task_id: Uuid::parse_str(&row.task_id).unwrap(),
             status: parse_task_run_status(&row.status),
             started_at: row.started_at.and_then(|value| value.parse().ok()),
@@ -392,6 +412,7 @@ impl From<OpTaskRunRow> for OpTaskRun {
 #[derive(FromRow)]
 struct TaskArtifactRow {
     id: String,
+    profile_id: String,
     run_id: String,
     work_item_id: Option<String>,
     name: String,
@@ -407,6 +428,7 @@ impl From<TaskArtifactRow> for TaskArtifact {
     fn from(row: TaskArtifactRow) -> Self {
         Self {
             id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
             run_id: Uuid::parse_str(&row.run_id).unwrap(),
             work_item_id: row
                 .work_item_id

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 const DEFAULT_API_BASE = "http://localhost:8080";
+const DEFAULT_PROFILE_ID = "00000000-0000-0000-0000-000000000001";
 const STORAGE_KEYS = {
   apiBase: "apiBase",
   token: "token",
+  profileId: "profileId",
   artifactTypeFilter: "artifactTypeFilter",
   statusFilter: "statusFilter",
 };
@@ -184,6 +186,38 @@ const styles = {
     gridTemplateColumns: "minmax(260px, 1fr) 1.4fr 1fr",
     gap: 12,
     alignItems: "start",
+  },
+  criteriaPanel: {
+    background: "white",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "0 1px 8px rgba(15, 23, 42, 0.06)",
+    display: "grid",
+    gridTemplateColumns: "minmax(220px, 0.45fr) minmax(320px, 1fr) auto",
+    gap: 12,
+    alignItems: "start",
+  },
+  textarea: {
+    width: "100%",
+    minHeight: 92,
+    border: "1px solid #d1d5db",
+    borderRadius: 12,
+    padding: "10px 12px",
+    fontSize: 14,
+    background: "white",
+    color: "#111827",
+    resize: "vertical",
+    lineHeight: 1.45,
+    fontFamily: "inherit",
+  },
+  mainTabs: {
+    background: "white",
+    borderRadius: 18,
+    padding: 10,
+    boxShadow: "0 1px 8px rgba(15, 23, 42, 0.06)",
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
   },
   presetGroup: {
     display: "flex",
@@ -499,6 +533,10 @@ function writeStoredSetting(key, value) {
   }
 }
 
+function profileApiPath(profileId, path) {
+  return `/api/employment/profiles/${profileId || DEFAULT_PROFILE_ID}${path}`;
+}
+
 function getArtifactSourceUrl(artifact) {
   return artifact?.location || artifact?.metadata?.source_url || artifact?.content_json?.source_url || "";
 }
@@ -531,6 +569,11 @@ function describeOpportunity(opportunity) {
 export default function App() {
   const [apiBase, setApiBase] = useState(() => readStoredSetting(STORAGE_KEYS.apiBase, DEFAULT_API_BASE));
   const [token, setToken] = useState(() => readStoredSetting(STORAGE_KEYS.token, ""));
+  const [profiles, setProfiles] = useState([]);
+  const [selectedProfileId, setSelectedProfileId] = useState(() =>
+    readStoredSetting(STORAGE_KEYS.profileId, DEFAULT_PROFILE_ID),
+  );
+  const [criteriaDraft, setCriteriaDraft] = useState("");
   const [opportunities, setOpportunities] = useState([]);
   const [allOpportunities, setAllOpportunities] = useState([]);
   const [artifacts, setArtifacts] = useState([]);
@@ -548,6 +591,7 @@ export default function App() {
   const [jobUrl, setJobUrl] = useState("");
   const [opportunityDetailTab, setOpportunityDetailTab] = useState("summary");
   const [artifactDetailTab, setArtifactDetailTab] = useState("text");
+  const [activeMainTab, setActiveMainTab] = useState("opportunities");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState(() =>
     normalizeStatusFilterValue(readStoredSetting(STORAGE_KEYS.statusFilter, "")),
@@ -580,12 +624,20 @@ export default function App() {
     });
   }, [artifacts, query]);
 
+  const selectedProfile = useMemo(
+    () => profiles.find((profile) => profile.id === selectedProfileId) || null,
+    [profiles, selectedProfileId],
+  );
+  const criteriaChanged = criteriaDraft !== (selectedProfile?.criteria || "");
+
   const computeTodayStats = async (allOpportunities, allArtifacts) => {
-    const tasksResponse = await apiFetch(apiBase, token, "/api/op-tasks");
+    const tasksResponse = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, "/op-tasks"));
     const tasks = tasksResponse?.items || [];
     const runResponses = await Promise.all(
       tasks.map((task) =>
-        apiFetch(apiBase, token, `/api/op-tasks/${task.id}/runs`).catch(() => ({ runs: [] })),
+        apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/op-tasks/${task.id}/runs`)).catch(() => ({
+          runs: [],
+        })),
       ),
     );
     const runs = runResponses.flatMap((response) => response?.runs || []);
@@ -611,12 +663,87 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
+    writeStoredSetting(STORAGE_KEYS.profileId, selectedProfileId);
+  }, [selectedProfileId]);
+
+  useEffect(() => {
     writeStoredSetting(STORAGE_KEYS.artifactTypeFilter, artifactTypeFilter);
   }, [artifactTypeFilter]);
 
   useEffect(() => {
     writeStoredSetting(STORAGE_KEYS.statusFilter, statusFilter);
   }, [statusFilter]);
+
+  async function loadProfiles() {
+    try {
+      const response = await apiFetch(apiBase, token, "/api/employment/profiles");
+      const profileItems = response?.profiles || [];
+      setProfiles(profileItems);
+
+      if (profileItems.length && !profileItems.some((profile) => profile.id === selectedProfileId)) {
+        setSelectedProfileId(profileItems[0].id);
+      }
+    } catch (err) {
+      setError(err.message || "Failed to load employment profiles.");
+    }
+  }
+
+  async function createProfile() {
+    const displayName = window.prompt("Profile name");
+    if (!displayName?.trim()) return;
+
+    setActionLoading("create-profile");
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, "/api/employment/profiles", {
+        method: "POST",
+        body: JSON.stringify({ display_name: displayName.trim() }),
+      });
+      const profile = response?.profile;
+      if (!profile?.id) {
+        throw new Error("Profile was created without an id.");
+      }
+
+      setProfiles((items) => [...items, profile].sort((a, b) => a.display_name.localeCompare(b.display_name)));
+      setSelectedProfileId(profile.id);
+      setSelectedOpportunity(null);
+      setSelectedArtifact(null);
+      setArtifactContent(null);
+      setNotice("Created profile.");
+    } catch (err) {
+      setError(err.message || "Failed to create profile.");
+    } finally {
+      setActionLoading("");
+    }
+  }
+
+  async function saveProfileCriteria() {
+    if (!selectedProfileId) return;
+
+    setActionLoading("save-criteria");
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await apiFetch(apiBase, token, `/api/employment/profiles/${selectedProfileId}`, {
+        method: "PUT",
+        body: JSON.stringify({ criteria: criteriaDraft }),
+      });
+      const profile = response?.profile;
+      if (!profile?.id) {
+        throw new Error("Profile update did not return a profile.");
+      }
+
+      setProfiles((items) => items.map((item) => (item.id === profile.id ? profile : item)));
+      setNotice("Saved profile criteria.");
+    } catch (err) {
+      setError(err.message || "Failed to save profile criteria.");
+    } finally {
+      setActionLoading("");
+    }
+  }
 
   async function loadAll() {
     setLoading(true);
@@ -625,8 +752,8 @@ export default function App() {
 
     try {
       const opportunityPath = statusFilter
-        ? `/api/employment/opportunities?status=${encodeURIComponent(statusFilter)}`
-        : "/api/employment/opportunities";
+        ? `${profileApiPath(selectedProfileId, "/opportunities")}?status=${encodeURIComponent(statusFilter)}`
+        : profileApiPath(selectedProfileId, "/opportunities");
 
       const artifactParams = new URLSearchParams();
       if (artifactTypeFilter) artifactParams.set("artifact_type", artifactTypeFilter);
@@ -636,9 +763,13 @@ export default function App() {
       const [opportunityResponse, artifactResponse, dashboardOpportunityResponse, dashboardArtifactResponse] =
         await Promise.all([
         apiFetch(apiBase, token, opportunityPath),
-        apiFetch(apiBase, token, `/api/op-task-artifacts?${artifactParams.toString()}`),
-        apiFetch(apiBase, token, "/api/employment/opportunities?limit=200"),
-        apiFetch(apiBase, token, "/api/op-task-artifacts?limit=200&include_content=false"),
+        apiFetch(apiBase, token, `${profileApiPath(selectedProfileId, "/op-task-artifacts")}?${artifactParams.toString()}`),
+        apiFetch(apiBase, token, `${profileApiPath(selectedProfileId, "/opportunities")}?limit=200`),
+        apiFetch(
+          apiBase,
+          token,
+          `${profileApiPath(selectedProfileId, "/op-task-artifacts")}?limit=200&include_content=false`,
+        ),
       ]);
 
       const allOpportunityItems = dashboardOpportunityResponse?.opportunities || [];
@@ -662,7 +793,11 @@ export default function App() {
     setError("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/op-task-artifacts/${artifact.id}/content`);
+      const response = await apiFetch(
+        apiBase,
+        token,
+        profileApiPath(selectedProfileId, `/op-task-artifacts/${artifact.id}/content`),
+      );
       setArtifactContent(response);
     } catch (err) {
       setError(err.message || "Failed to load artifact content.");
@@ -682,7 +817,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const createTaskResponse = await apiFetch(apiBase, token, "/api/op-tasks", {
+      const createTaskResponse = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, "/op-tasks"), {
         method: "POST",
         body: JSON.stringify({
           name: "Read Job URL",
@@ -698,9 +833,14 @@ export default function App() {
         throw new Error("Reader task was created without an id.");
       }
 
-      const runResponse = await apiFetch(apiBase, token, `/api/op-tasks/${taskId}/run`, {
-        method: "POST",
-      });
+      const runResponse = await apiFetch(
+        apiBase,
+        token,
+        profileApiPath(selectedProfileId, `/op-tasks/${taskId}/run`),
+        {
+          method: "POST",
+        },
+      );
 
       const run = runResponse?.run;
       const artifact = run?.artifacts?.[0];
@@ -734,7 +874,7 @@ export default function App() {
           const opportunityResponse = await apiFetch(
             apiBase,
             token,
-            `/api/employment/opportunities/from-artifact/${artifact.id}`,
+            profileApiPath(selectedProfileId, `/opportunities/from-artifact/${artifact.id}`),
             { method: "POST" },
           );
           setSelectedOpportunity(opportunityResponse.opportunity);
@@ -780,7 +920,7 @@ export default function App() {
       const response = await apiFetch(
         apiBase,
         token,
-        `/api/employment/opportunities/from-artifact/${artifactId}`,
+        profileApiPath(selectedProfileId, `/opportunities/from-artifact/${artifactId}`),
         { method: "POST" },
       );
 
@@ -812,7 +952,7 @@ export default function App() {
         response = await apiFetch(
           apiBase,
           token,
-          `/api/employment/opportunities/from-artifact/${artifactId}`,
+          profileApiPath(selectedProfileId, `/opportunities/from-artifact/${artifactId}`),
           { method: "POST" },
         );
 
@@ -820,14 +960,14 @@ export default function App() {
       }
 
       if (parse) {
-        response = await apiFetch(apiBase, token, `/api/employment/opportunities/${opportunity.id}/parse`, {
+        response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${opportunity.id}/parse`), {
           method: "POST",
         });
         opportunity = response.opportunity;
       }
 
       if (score) {
-        response = await apiFetch(apiBase, token, `/api/employment/opportunities/${opportunity.id}/score`, {
+        response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${opportunity.id}/score`), {
           method: "POST",
         });
         opportunity = response.opportunity;
@@ -854,7 +994,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/parse`, {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${id}/parse`), {
         method: "POST",
       });
 
@@ -875,7 +1015,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/score`, {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${id}/score`), {
         method: "POST",
       });
 
@@ -896,7 +1036,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/archive`, {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${id}/archive`), {
         method: "POST",
         body: JSON.stringify({ reason: reason || null }),
       });
@@ -917,7 +1057,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/reject`, {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${id}/reject`), {
         method: "POST",
         body: JSON.stringify({ reason: reason || null }),
       });
@@ -938,7 +1078,7 @@ export default function App() {
     setNotice("");
 
     try {
-      const response = await apiFetch(apiBase, token, `/api/employment/opportunities/${id}/restore`, {
+      const response = await apiFetch(apiBase, token, profileApiPath(selectedProfileId, `/opportunities/${id}/restore`), {
         method: "POST",
         body: JSON.stringify({ reason: reason || null }),
       });
@@ -976,7 +1116,7 @@ export default function App() {
       const response = await apiFetch(
         apiBase,
         token,
-        `/api/op-task-artifacts/${opportunity.source_artifact_id}`,
+        profileApiPath(selectedProfileId, `/op-task-artifacts/${opportunity.source_artifact_id}`),
       );
       await selectArtifact(response.artifact);
       setNotice("Loaded source artifact.");
@@ -988,9 +1128,21 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadAll();
+    loadProfiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setSelectedOpportunity(null);
+    setSelectedArtifact(null);
+    setArtifactContent(null);
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProfileId]);
+
+  useEffect(() => {
+    setCriteriaDraft(selectedProfile?.criteria || "");
+  }, [selectedProfile?.id, selectedProfile?.criteria]);
 
   return (
     <div style={styles.page}>
@@ -1008,6 +1160,31 @@ export default function App() {
               <input style={styles.input} value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
               <button style={styles.button} onClick={loadAll} disabled={loading}>
                 {loading ? "Loading…" : "Refresh"}
+              </button>
+            </div>
+            <div style={styles.row}>
+              <select
+                style={styles.input}
+                value={selectedProfileId}
+                onChange={(e) => setSelectedProfileId(e.target.value)}
+                title="Profile"
+              >
+                {profiles.length === 0 ? (
+                  <option value={selectedProfileId}>{selectedProfile?.display_name || "Default"}</option>
+                ) : (
+                  profiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.display_name}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button
+                style={styles.buttonSecondary}
+                onClick={createProfile}
+                disabled={actionLoading === "create-profile"}
+              >
+                New Profile
               </button>
             </div>
             <input
@@ -1047,6 +1224,28 @@ export default function App() {
             disabled={actionLoading === "read-url" || actionLoading === "read-create-url"}
           >
             {actionLoading === "read-create-url" ? "Reading…" : "Read → Create Opportunity"}
+          </button>
+        </section>
+
+        <section style={styles.criteriaPanel}>
+          <div>
+            <div style={styles.sectionTitle}>
+              <h2 style={styles.h2}>Profile Criteria</h2>
+            </div>
+            <div style={styles.muted}>{selectedProfile?.display_name || "Default"}</div>
+          </div>
+          <textarea
+            style={styles.textarea}
+            value={criteriaDraft}
+            onChange={(e) => setCriteriaDraft(e.target.value)}
+            placeholder="Target roles, must-haves, dealbreakers, location, salary, work style, technologies..."
+          />
+          <button
+            style={styles.button}
+            onClick={saveProfileCriteria}
+            disabled={!criteriaChanged || actionLoading === "save-criteria"}
+          >
+            {actionLoading === "save-criteria" ? "Saving…" : "Save Criteria"}
           </button>
         </section>
 
@@ -1096,37 +1295,66 @@ export default function App() {
           />
         </section>
 
-        <main style={styles.mainGrid}>
-          <section>
-            <div style={styles.sectionTitle}>
-              <h2 style={styles.h2}>Employment Opportunities</h2>
-              <span style={styles.muted}>{filteredOpportunities.length} shown</span>
-            </div>
-            <div style={styles.list}>
-              {filteredOpportunities.map((item) => (
-                <OpportunityCard
-                  key={item.id}
-                  item={item}
-                  selected={selectedOpportunity?.id === item.id}
-                  onSelect={() => {
-                    setSelectedOpportunity(item);
-                    setOpportunityDetailTab("summary");
-                  }}
-                  onParse={() => parseOpportunity(item.id)}
-                  onScore={() => scoreOpportunity(item.id)}
-                  onArchive={() => archiveOpportunity(item.id)}
-                  onReject={() => rejectOpportunity(item.id)}
-                  onRestore={() => restoreOpportunity(item.id)}
-                  onOpenSource={() => openOpportunitySourceUrl(item)}
-                  onViewArtifact={() => viewOpportunitySourceArtifact(item)}
-                  actionLoading={actionLoading}
-                />
-              ))}
-              {!filteredOpportunities.length ? <div style={styles.empty}>No opportunities found.</div> : null}
-            </div>
-          </section>
+        <section style={styles.mainTabs}>
+          <TabButton active={activeMainTab === "opportunities"} onClick={() => setActiveMainTab("opportunities")}>
+            Opportunities ({filteredOpportunities.length})
+          </TabButton>
+          <TabButton active={activeMainTab === "artifacts"} onClick={() => setActiveMainTab("artifacts")}>
+            Artifacts ({filteredArtifacts.length})
+          </TabButton>
+        </section>
 
-          <section>
+        {activeMainTab === "opportunities" ? (
+          <>
+            <section>
+              <div style={styles.sectionTitle}>
+                <h2 style={styles.h2}>Employment Opportunities</h2>
+                <span style={styles.muted}>{filteredOpportunities.length} shown</span>
+              </div>
+              <div style={styles.list}>
+                {filteredOpportunities.map((item) => (
+                  <OpportunityCard
+                    key={item.id}
+                    item={item}
+                    selected={selectedOpportunity?.id === item.id}
+                    onSelect={() => {
+                      setSelectedOpportunity(item);
+                      setOpportunityDetailTab("summary");
+                    }}
+                    onParse={() => parseOpportunity(item.id)}
+                    onScore={() => scoreOpportunity(item.id)}
+                    onArchive={() => archiveOpportunity(item.id)}
+                    onReject={() => rejectOpportunity(item.id)}
+                    onRestore={() => restoreOpportunity(item.id)}
+                    onOpenSource={() => openOpportunitySourceUrl(item)}
+                    onViewArtifact={() => {
+                      viewOpportunitySourceArtifact(item);
+                      setActiveMainTab("artifacts");
+                    }}
+                    actionLoading={actionLoading}
+                  />
+                ))}
+                {!filteredOpportunities.length ? <div style={styles.empty}>No opportunities found.</div> : null}
+              </div>
+            </section>
+
+            <section style={styles.card}>
+              <h2 style={styles.h2}>Opportunity Detail</h2>
+              {selectedOpportunity ? (
+                <OpportunityDetail
+                  opportunity={selectedOpportunity}
+                  activeTab={opportunityDetailTab}
+                  onTabChange={setOpportunityDetailTab}
+                />
+              ) : (
+                <p style={styles.muted}>Select an opportunity to review parsed fields and scoring.</p>
+              )}
+            </section>
+          </>
+        ) : null}
+
+        {activeMainTab === "artifacts" ? (
+          <>
             <div style={styles.sectionTitle}>
               <h2 style={styles.h2}>Artifacts</h2>
               <span style={styles.muted}>{filteredArtifacts.length} shown</span>
@@ -1167,37 +1395,22 @@ export default function App() {
               })}
               {!filteredArtifacts.length ? <div style={styles.empty}>No artifacts found.</div> : null}
             </div>
-          </section>
-        </main>
 
-        <section style={styles.detailsGrid}>
-          <div style={styles.card}>
-            <h2 style={styles.h2}>Opportunity Detail</h2>
-            {selectedOpportunity ? (
-              <OpportunityDetail
-                opportunity={selectedOpportunity}
-                activeTab={opportunityDetailTab}
-                onTabChange={setOpportunityDetailTab}
-              />
-            ) : (
-              <p style={styles.muted}>Select an opportunity to review parsed fields and scoring.</p>
-            )}
-          </div>
-
-          <div style={styles.card}>
-            <h2 style={styles.h2}>Artifact Content</h2>
-            {selectedArtifact ? (
-              <ArtifactDetail
-                artifact={selectedArtifact}
-                artifactContent={artifactContent}
-                activeTab={artifactDetailTab}
-                onTabChange={setArtifactDetailTab}
-              />
-            ) : (
-              <p style={styles.muted}>Select an artifact to review readable content.</p>
-            )}
-          </div>
-        </section>
+            <section style={styles.card}>
+              <h2 style={styles.h2}>Artifact Content</h2>
+              {selectedArtifact ? (
+                <ArtifactDetail
+                  artifact={selectedArtifact}
+                  artifactContent={artifactContent}
+                  activeTab={artifactDetailTab}
+                  onTabChange={setArtifactDetailTab}
+                />
+              ) : (
+                <p style={styles.muted}>Select an artifact to review readable content.</p>
+              )}
+            </section>
+          </>
+        ) : null}
       </div>
     </div>
   );

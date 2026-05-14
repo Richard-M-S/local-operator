@@ -1,5 +1,6 @@
 use crate::domains::employment::models::{
     EmploymentOpportunity, EmploymentOpportunitySearch, EmploymentOpportunityStatus,
+    EmploymentProfile,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool};
@@ -29,6 +30,7 @@ impl EmploymentRepository {
             r#"
             INSERT INTO employment_opportunities (
                 id,
+                profile_id,
                 source_url,
                 source_name,
                 title,
@@ -46,10 +48,11 @@ impl EmploymentRepository {
                 first_seen_at,
                 last_seen_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
         )
         .bind(opportunity.id.to_string())
+        .bind(opportunity.profile_id.to_string())
         .bind(&opportunity.source_url)
         .bind(&opportunity.source_name)
         .bind(&opportunity.title)
@@ -80,6 +83,7 @@ impl EmploymentRepository {
             r#"
             SELECT
                 id,
+                profile_id,
                 source_url,
                 source_name,
                 title,
@@ -109,12 +113,14 @@ impl EmploymentRepository {
 
     pub async fn find_opportunity_by_source_url(
         &self,
+        profile_id: Uuid,
         source_url: &str,
     ) -> anyhow::Result<Option<EmploymentOpportunity>> {
         let row = sqlx::query_as::<_, EmploymentOpportunityRow>(
             r#"
             SELECT
                 id,
+                profile_id,
                 source_url,
                 source_name,
                 title,
@@ -132,11 +138,13 @@ impl EmploymentRepository {
                 first_seen_at,
                 last_seen_at
             FROM employment_opportunities
-            WHERE source_url = ?1
+            WHERE profile_id = ?1
+              AND source_url = ?2
             ORDER BY last_seen_at DESC
             LIMIT 1
             "#,
         )
+        .bind(profile_id.to_string())
         .bind(source_url)
         .fetch_optional(&self.pool)
         .await?;
@@ -155,6 +163,7 @@ impl EmploymentRepository {
             r#"
             SELECT
                 id,
+                profile_id,
                 source_url,
                 source_name,
                 title,
@@ -175,6 +184,11 @@ impl EmploymentRepository {
             WHERE 1 = 1
             "#,
         );
+
+        if let Some(profile_id) = search.profile_id {
+            query.push(" AND profile_id = ");
+            query.push_bind(profile_id.to_string());
+        }
 
         if let Some(status) = search.status {
             query.push(" AND status = ");
@@ -240,25 +254,27 @@ impl EmploymentRepository {
             UPDATE employment_opportunities
             SET
                 source_url = ?1,
-                source_name = ?2,
-                title = ?3,
-                company = ?4,
-                location = ?5,
-                remote_type = ?6,
-                salary_min = ?7,
-                salary_max = ?8,
-                description_text = ?9,
-                extracted_json = ?10,
-                fit_score = ?11,
-                status = ?12,
-                skip_reason = ?13,
-                source_artifact_id = ?14,
-                first_seen_at = ?15,
-                last_seen_at = ?16
-            WHERE id = ?17
+                profile_id = ?2,
+                source_name = ?3,
+                title = ?4,
+                company = ?5,
+                location = ?6,
+                remote_type = ?7,
+                salary_min = ?8,
+                salary_max = ?9,
+                description_text = ?10,
+                extracted_json = ?11,
+                fit_score = ?12,
+                status = ?13,
+                skip_reason = ?14,
+                source_artifact_id = ?15,
+                first_seen_at = ?16,
+                last_seen_at = ?17
+            WHERE id = ?18
             "#,
         )
         .bind(&opportunity.source_url)
+        .bind(opportunity.profile_id.to_string())
         .bind(&opportunity.source_name)
         .bind(&opportunity.title)
         .bind(&opportunity.company)
@@ -325,11 +341,93 @@ impl EmploymentRepository {
 
         self.get_opportunity(opportunity_id).await
     }
+
+    pub async fn create_profile(
+        &self,
+        profile: EmploymentProfile,
+    ) -> anyhow::Result<EmploymentProfile> {
+        sqlx::query(
+            r#"
+            INSERT INTO employment_profiles (
+                id, display_name, email, notes, criteria, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+        )
+        .bind(profile.id.to_string())
+        .bind(&profile.display_name)
+        .bind(&profile.email)
+        .bind(&profile.notes)
+        .bind(&profile.criteria)
+        .bind(profile.created_at.to_rfc3339())
+        .bind(profile.updated_at.map(|dt| dt.to_rfc3339()))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(profile)
+    }
+
+    pub async fn update_profile(
+        &self,
+        profile: EmploymentProfile,
+    ) -> anyhow::Result<EmploymentProfile> {
+        sqlx::query(
+            r#"
+            UPDATE employment_profiles
+            SET
+                display_name = ?1,
+                email = ?2,
+                notes = ?3,
+                criteria = ?4,
+                updated_at = ?5
+            WHERE id = ?6
+            "#,
+        )
+        .bind(&profile.display_name)
+        .bind(&profile.email)
+        .bind(&profile.notes)
+        .bind(&profile.criteria)
+        .bind(profile.updated_at.map(|dt| dt.to_rfc3339()))
+        .bind(profile.id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(profile)
+    }
+
+    pub async fn list_profiles(&self) -> anyhow::Result<Vec<EmploymentProfile>> {
+        let rows = sqlx::query_as::<_, EmploymentProfileRow>(
+            r#"
+            SELECT id, display_name, email, notes, criteria, created_at, updated_at
+            FROM employment_profiles
+            ORDER BY display_name ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn get_profile(&self, profile_id: Uuid) -> anyhow::Result<Option<EmploymentProfile>> {
+        let row = sqlx::query_as::<_, EmploymentProfileRow>(
+            r#"
+            SELECT id, display_name, email, notes, criteria, created_at, updated_at
+            FROM employment_profiles
+            WHERE id = ?1
+            "#,
+        )
+        .bind(profile_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(Into::into))
+    }
 }
 
 #[derive(FromRow)]
 struct EmploymentOpportunityRow {
     id: String,
+    profile_id: String,
     source_url: String,
     source_name: Option<String>,
     title: Option<String>,
@@ -352,6 +450,7 @@ impl From<EmploymentOpportunityRow> for EmploymentOpportunity {
     fn from(row: EmploymentOpportunityRow) -> Self {
         Self {
             id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
             source_url: row.source_url,
             source_name: row.source_name,
             title: row.title,
@@ -372,6 +471,31 @@ impl From<EmploymentOpportunityRow> for EmploymentOpportunity {
                 .and_then(|id| Uuid::parse_str(&id).ok()),
             first_seen_at: parse_datetime(&row.first_seen_at),
             last_seen_at: parse_datetime(&row.last_seen_at),
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct EmploymentProfileRow {
+    id: String,
+    display_name: String,
+    email: Option<String>,
+    notes: Option<String>,
+    criteria: Option<String>,
+    created_at: String,
+    updated_at: Option<String>,
+}
+
+impl From<EmploymentProfileRow> for EmploymentProfile {
+    fn from(row: EmploymentProfileRow) -> Self {
+        Self {
+            id: Uuid::parse_str(&row.id).unwrap(),
+            display_name: row.display_name,
+            email: row.email,
+            notes: row.notes,
+            criteria: row.criteria,
+            created_at: parse_datetime(&row.created_at),
+            updated_at: row.updated_at.map(|value| parse_datetime(&value)),
         }
     }
 }

@@ -5,6 +5,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+pub const DEFAULT_EMPLOYMENT_PROFILE_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+pub fn default_employment_profile_id() -> Uuid {
+    Uuid::parse_str(DEFAULT_EMPLOYMENT_PROFILE_ID).expect("default profile id is a valid uuid")
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EmploymentProfile {
+    pub id: Uuid,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub notes: Option<String>,
+    pub criteria: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EmploymentContextBundle {
     pub career_profile: Vec<SavedContext>,
@@ -29,6 +46,7 @@ impl EmploymentContextBundle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EmploymentOpportunity {
     pub id: Uuid,
+    pub profile_id: Uuid,
     pub source_url: String,
     pub source_name: Option<String>,
     pub title: Option<String>,
@@ -49,6 +67,7 @@ pub struct EmploymentOpportunity {
 
 impl EmploymentOpportunity {
     pub fn new_discovered(
+        profile_id: Uuid,
         source_url: String,
         source_name: Option<String>,
         source_artifact_id: Option<Uuid>,
@@ -57,6 +76,7 @@ impl EmploymentOpportunity {
 
         Self {
             id: Uuid::new_v4(),
+            profile_id,
             source_url,
             source_name,
             title: None,
@@ -93,6 +113,7 @@ pub enum EmploymentOpportunityStatus {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct EmploymentOpportunitySearch {
+    pub profile_id: Option<Uuid>,
     pub status: Option<EmploymentOpportunityStatus>,
     pub company: Option<String>,
     pub title: Option<String>,

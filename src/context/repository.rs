@@ -16,11 +16,12 @@ impl ContextRepository {
         sqlx::query(
             r#"
             INSERT INTO saved_contexts (
-                id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                id, profile_id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
         )
         .bind(context.id.to_string())
+        .bind(context.profile_id.to_string())
         .bind(context.kind.as_str())
         .bind(&context.title)
         .bind(&context.body)
@@ -38,7 +39,7 @@ impl ContextRepository {
     pub async fn get_context(&self, context_id: Uuid) -> anyhow::Result<Option<SavedContext>> {
         let row = sqlx::query_as::<_, SavedContextRow>(
             r#"
-            SELECT id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
+            SELECT id, profile_id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
             FROM saved_contexts
             WHERE id = ?1
             "#,
@@ -50,30 +51,38 @@ impl ContextRepository {
         Ok(row.map(Into::into))
     }
 
-    pub async fn list_contexts(&self) -> anyhow::Result<Vec<SavedContext>> {
+    pub async fn list_contexts(&self, profile_id: Uuid) -> anyhow::Result<Vec<SavedContext>> {
         let rows = sqlx::query_as::<_, SavedContextRow>(
             r#"
-            SELECT id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
+            SELECT id, profile_id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
             FROM saved_contexts
+            WHERE profile_id = ?1
             ORDER BY created_at DESC
             "#,
         )
+        .bind(profile_id.to_string())
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    pub async fn search_context_basic(&self, query: &str) -> anyhow::Result<Vec<SavedContext>> {
+    pub async fn search_context_basic(
+        &self,
+        profile_id: Uuid,
+        query: &str,
+    ) -> anyhow::Result<Vec<SavedContext>> {
         let pattern = format!("%{}%", query);
         let rows = sqlx::query_as::<_, SavedContextRow>(
             r#"
-            SELECT id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
+            SELECT id, profile_id, kind, title, body, source_url, source_artifact_id, tags_json, created_at, updated_at
             FROM saved_contexts
-            WHERE title LIKE ?1 OR body LIKE ?1 OR tags_json LIKE ?1
+            WHERE profile_id = ?1
+              AND (title LIKE ?2 OR body LIKE ?2 OR tags_json LIKE ?2)
             ORDER BY created_at DESC
             "#,
         )
+        .bind(profile_id.to_string())
         .bind(pattern)
         .fetch_all(&self.pool)
         .await?;
@@ -86,16 +95,18 @@ impl ContextRepository {
         sqlx::query(
             r#"
             UPDATE saved_contexts
-            SET kind = ?1,
-                title = ?2,
-                body = ?3,
-                source_url = ?4,
-                source_artifact_id = ?5,
-                tags_json = ?6,
-                updated_at = ?7
-            WHERE id = ?8
+            SET profile_id = ?1,
+                kind = ?2,
+                title = ?3,
+                body = ?4,
+                source_url = ?5,
+                source_artifact_id = ?6,
+                tags_json = ?7,
+                updated_at = ?8
+            WHERE id = ?9
             "#,
         )
+        .bind(context.profile_id.to_string())
         .bind(context.kind.as_str())
         .bind(&context.title)
         .bind(&context.body)
@@ -129,6 +140,7 @@ impl ContextRepository {
 #[derive(FromRow)]
 struct SavedContextRow {
     id: String,
+    profile_id: String,
     kind: String,
     title: String,
     body: String,
@@ -145,6 +157,7 @@ impl From<SavedContextRow> for SavedContext {
 
         Self {
             id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
             kind: parse_context_kind(&row.kind),
             title: row.title,
             body: row.body,

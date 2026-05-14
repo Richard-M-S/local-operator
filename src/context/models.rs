@@ -28,6 +28,7 @@ pub enum ContextSource {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SavedContext {
     pub id: Uuid,
+    pub profile_id: Uuid,
     pub kind: ContextKind,
     pub title: String,
     pub body: String,

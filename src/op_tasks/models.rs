@@ -8,6 +8,7 @@ use crate::context::models::ContextKind;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OpTask {
     pub id: Uuid,
+    pub profile_id: Uuid,
     pub task_type: String,
     pub name: String,
     pub description: Option<String>,
@@ -21,6 +22,7 @@ pub struct OpTask {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OpTaskRun {
     pub id: Uuid,
+    pub profile_id: Uuid,
     pub task_id: Uuid,
     pub status: OpTaskRunStatus,
     pub started_at: Option<DateTime<Utc>>,
@@ -48,6 +50,7 @@ pub struct OpWorkItem {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TaskArtifact {
     pub id: Uuid,
+    pub profile_id: Uuid,
     pub run_id: Uuid,
     pub work_item_id: Option<Uuid>,
     pub name: String,
@@ -61,6 +64,7 @@ pub struct TaskArtifact {
 
 #[derive(Clone, Debug, Default)]
 pub struct ArtifactSearch {
+    pub profile_id: Option<Uuid>,
     pub run_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
     pub artifact_type: Option<String>,

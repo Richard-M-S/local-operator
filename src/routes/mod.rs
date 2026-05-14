@@ -21,9 +21,53 @@ pub mod status;
 pub fn router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/api/status", get(status::status))
+        .route(
+            "/api/employment/profiles",
+            get(employment::list_profiles).post(employment::create_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id",
+            get(employment::get_profile).put(employment::update_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/context",
+            get(context::list_for_profile).post(context::create_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/context/search",
+            get(context::search_for_profile),
+        )
         .route("/api/context", get(context::list).post(context::create))
         .route("/api/context/search", get(context::search))
         .route("/api/context/:id", get(context::get))
+        .route(
+            "/api/employment/profiles/:profile_id/op-tasks",
+            post(op_tasks::create_for_profile).get(op_tasks::list_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-tasks/:id/run",
+            post(op_tasks::run_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-tasks/:id/runs",
+            get(op_tasks::list_runs_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-task-artifacts",
+            get(op_tasks::list_artifacts_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-task-artifacts/:id/content",
+            get(op_tasks::get_artifact_content_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-task-artifacts/:id/save-context",
+            post(op_tasks::save_artifact_context_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/op-task-artifacts/:id",
+            get(op_tasks::get_artifact_for_profile),
+        )
         .route("/api/op-tasks", post(op_tasks::create).get(op_tasks::list))
         .route("/api/op-tasks/:id", get(op_tasks::get))
         .route("/api/op-tasks/:id/run", post(op_tasks::run))
@@ -47,6 +91,39 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/employment/opportunities",
             get(employment::list_opportunities).post(employment::create_opportunity),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities",
+            get(employment::list_opportunities_for_profile)
+                .post(employment::create_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id",
+            get(employment::get_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/parse",
+            post(employment::parse_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/score",
+            post(employment::score_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/archive",
+            post(employment::archive_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/reject",
+            post(employment::reject_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/restore",
+            post(employment::restore_opportunity_for_profile),
+        )
+        .route(
+            "/api/employment/profiles/:profile_id/opportunities/from-artifact/:artifact_id",
+            post(employment::create_opportunity_from_artifact_for_profile),
         )
         .route(
             "/api/employment/opportunities/:id",

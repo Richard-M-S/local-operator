@@ -24,6 +24,7 @@ impl OpTaskService {
 
     pub async fn create_task(
         &self,
+        profile_id: Uuid,
         task_type: String,
         name: String,
         description: Option<String>,
@@ -34,6 +35,7 @@ impl OpTaskService {
 
         let task = OpTask {
             id: Uuid::new_v4(),
+            profile_id,
             task_type: task_type.trim().to_string(),
             name: name.trim().to_string(),
             description,
@@ -73,10 +75,14 @@ impl OpTaskService {
     pub async fn promote_artifact_to_context(
         &self,
         context: &ContextService,
+        profile_id: Uuid,
         artifact_id: Uuid,
         request: PromoteArtifactToContextRequest,
     ) -> Result<SavedContext, AppError> {
         let artifact = self.get_artifact(artifact_id).await?;
+        if artifact.profile_id != profile_id {
+            return Err(AppError::NotFound("Op Task artifact not found".to_string()));
+        }
 
         let title = request.title.trim().to_string();
         if title.is_empty() {
@@ -126,6 +132,7 @@ impl OpTaskService {
 
         context
             .save_context_note(
+                profile_id,
                 request.kind,
                 title,
                 body,
@@ -144,9 +151,9 @@ impl OpTaskService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn list_tasks(&self) -> Result<Vec<OpTask>, AppError> {
+    pub async fn list_tasks(&self, profile_id: Uuid) -> Result<Vec<OpTask>, AppError> {
         self.repo
-            .list_op_tasks()
+            .list_op_tasks(profile_id)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
@@ -186,6 +193,7 @@ impl OpTaskService {
 
         let run = OpTaskRun {
             id: run_id,
+            profile_id: task.profile_id,
             task_id,
             status: OpTaskRunStatus::Pending,
             started_at: None,

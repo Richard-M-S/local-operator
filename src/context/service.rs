@@ -16,6 +16,7 @@ impl ContextService {
 
     pub async fn save_context_note(
         &self,
+        profile_id: Uuid,
         kind: ContextKind,
         title: String,
         body: String,
@@ -26,6 +27,7 @@ impl ContextService {
         let now = Utc::now();
         let context = SavedContext {
             id: Uuid::new_v4(),
+            profile_id,
             kind,
             title,
             body,
@@ -41,13 +43,14 @@ impl ContextService {
 
     pub async fn get_relevant_context(
         &self,
+        profile_id: Uuid,
         query: &str,
         kind: Option<ContextKind>,
     ) -> Result<Vec<SavedContext>> {
         let mut results = if query.is_empty() {
-            self.repo.list_contexts().await?
+            self.repo.list_contexts(profile_id).await?
         } else {
-            self.repo.search_context_basic(query).await?
+            self.repo.search_context_basic(profile_id, query).await?
         };
 
         if let Some(kind) = kind {
@@ -63,7 +66,10 @@ impl ContextService {
 
     #[allow(dead_code)]
     pub async fn list_context_by_kind(&self, kind: ContextKind) -> Result<Vec<SavedContext>> {
-        let mut contexts = self.repo.list_contexts().await?;
+        let mut contexts = self
+            .repo
+            .list_contexts(crate::domains::employment::models::default_employment_profile_id())
+            .await?;
         contexts.retain(|item| item.kind == kind);
         Ok(contexts)
     }

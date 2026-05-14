@@ -108,6 +108,7 @@ impl OpTaskRunner {
         let run_id = run.id;
         run.artifacts.push(TaskArtifact {
             id: Uuid::new_v4(),
+            profile_id: run.profile_id,
             run_id,
             work_item_id: Some(work_item_id),
             name: "system_status_report".to_string(),
@@ -161,6 +162,7 @@ impl OpTaskRunner {
 
         let artifact = TaskArtifact {
             id: Uuid::new_v4(),
+            profile_id: run.profile_id,
             run_id: run.id,
             work_item_id: Some(work_item.id),
             name: title,

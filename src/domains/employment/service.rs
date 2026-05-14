@@ -71,9 +71,13 @@ impl EmploymentOpportunityService {
 
     pub async fn create_from_artifact(
         &self,
+        profile_id: Uuid,
         artifact_id: Uuid,
     ) -> Result<EmploymentOpportunity, AppError> {
         let artifact = self.op_tasks.get_artifact(artifact_id).await?;
+        if artifact.profile_id != profile_id {
+            return Err(AppError::NotFound("Op Task artifact not found".to_string()));
+        }
 
         if artifact.artifact_type != "readable_web_page" {
             return Err(AppError::BadRequest(
@@ -89,6 +93,7 @@ impl EmploymentOpportunityService {
         if let Some(existing) = self
             .repository
             .list_opportunities(EmploymentOpportunitySearch {
+                profile_id: Some(profile_id),
                 source_artifact_id: Some(artifact.id),
                 limit: Some(1),
                 ..Default::default()
@@ -103,7 +108,7 @@ impl EmploymentOpportunityService {
 
         if let Some(existing) = self
             .repository
-            .find_opportunity_by_source_url(&source_url)
+            .find_opportunity_by_source_url(profile_id, &source_url)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?
         {
@@ -119,7 +124,7 @@ impl EmploymentOpportunityService {
             .unwrap_or_else(|| artifact.name.clone());
 
         let mut opportunity =
-            EmploymentOpportunity::new_discovered(source_url, None, Some(artifact.id));
+            EmploymentOpportunity::new_discovered(profile_id, source_url, None, Some(artifact.id));
 
         opportunity.title = Some(title);
         opportunity.description_text = artifact.content_text;
@@ -253,25 +258,35 @@ impl EmploymentContextService {
     }
 
     pub async fn load_application_context(&self) -> Result<EmploymentContextBundle> {
+        self.load_application_context_for_profile(
+            crate::domains::employment::models::default_employment_profile_id(),
+        )
+        .await
+    }
+
+    pub async fn load_application_context_for_profile(
+        &self,
+        profile_id: Uuid,
+    ) -> Result<EmploymentContextBundle> {
         let career_profile = self
             .context
-            .get_relevant_context("", Some(ContextKind::CareerProfile))
+            .get_relevant_context(profile_id, "", Some(ContextKind::CareerProfile))
             .await?;
         let resume_facts = self
             .context
-            .get_relevant_context("", Some(ContextKind::ResumeFact))
+            .get_relevant_context(profile_id, "", Some(ContextKind::ResumeFact))
             .await?;
         let project_evidence = self
             .context
-            .get_relevant_context("", Some(ContextKind::ProjectSummary))
+            .get_relevant_context(profile_id, "", Some(ContextKind::ProjectSummary))
             .await?;
         let writing_preferences = self
             .context
-            .get_relevant_context("", Some(ContextKind::WritingPreference))
+            .get_relevant_context(profile_id, "", Some(ContextKind::WritingPreference))
             .await?;
         let employment_preferences = self
             .context
-            .get_relevant_context("", Some(ContextKind::EmploymentPreference))
+            .get_relevant_context(profile_id, "", Some(ContextKind::EmploymentPreference))
             .await?;
 
         let salary_location_preferences =

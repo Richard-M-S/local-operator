@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     app_state::AppState,
     context::models::{ContextKind, SavedContext},
+    domains::employment::models::default_employment_profile_id,
     error::AppError,
 };
 
@@ -51,6 +52,22 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateContextRequest>,
 ) -> Result<Json<ContextResponse>, AppError> {
+    create_for_profile_id(state, default_employment_profile_id(), req).await
+}
+
+pub async fn create_for_profile(
+    State(state): State<AppState>,
+    Path(profile_id): Path<Uuid>,
+    Json(req): Json<CreateContextRequest>,
+) -> Result<Json<ContextResponse>, AppError> {
+    create_for_profile_id(state, profile_id, req).await
+}
+
+async fn create_for_profile_id(
+    state: AppState,
+    profile_id: Uuid,
+    req: CreateContextRequest,
+) -> Result<Json<ContextResponse>, AppError> {
     let title = req.title.trim().to_string();
     if title.is_empty() {
         return Err(AppError::BadRequest(
@@ -73,6 +90,7 @@ pub async fn create(
     let context = state
         .context
         .save_context_note(
+            profile_id,
             req.kind,
             title,
             req.body,
@@ -90,9 +108,25 @@ pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<ListContextQuery>,
 ) -> Result<Json<ListContextResponse>, AppError> {
+    list_for_profile_id(state, default_employment_profile_id(), query).await
+}
+
+pub async fn list_for_profile(
+    State(state): State<AppState>,
+    Path(profile_id): Path<Uuid>,
+    Query(query): Query<ListContextQuery>,
+) -> Result<Json<ListContextResponse>, AppError> {
+    list_for_profile_id(state, profile_id, query).await
+}
+
+async fn list_for_profile_id(
+    state: AppState,
+    profile_id: Uuid,
+    query: ListContextQuery,
+) -> Result<Json<ListContextResponse>, AppError> {
     let mut contexts = state
         .context
-        .get_relevant_context("", query.kind)
+        .get_relevant_context(profile_id, "", query.kind)
         .await
         .map_err(|err| AppError::Internal(err.to_string()))?;
 
@@ -128,9 +162,25 @@ pub async fn search(
     State(state): State<AppState>,
     Query(query): Query<SearchContextQuery>,
 ) -> Result<Json<ListContextResponse>, AppError> {
+    search_for_profile_id(state, default_employment_profile_id(), query).await
+}
+
+pub async fn search_for_profile(
+    State(state): State<AppState>,
+    Path(profile_id): Path<Uuid>,
+    Query(query): Query<SearchContextQuery>,
+) -> Result<Json<ListContextResponse>, AppError> {
+    search_for_profile_id(state, profile_id, query).await
+}
+
+async fn search_for_profile_id(
+    state: AppState,
+    profile_id: Uuid,
+    query: SearchContextQuery,
+) -> Result<Json<ListContextResponse>, AppError> {
     let contexts = state
         .context
-        .get_relevant_context(query.q.trim(), query.kind)
+        .get_relevant_context(profile_id, query.q.trim(), query.kind)
         .await
         .map_err(|err| AppError::Internal(err.to_string()))?;
 
