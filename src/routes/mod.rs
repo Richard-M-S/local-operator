@@ -110,6 +110,10 @@ pub fn router(state: AppState) -> Router {
             post(employment::score_opportunity_for_profile),
         )
         .route(
+            "/api/employment/profiles/:profile_id/opportunities/:id/cover-letter",
+            post(employment::generate_cover_letter_for_profile),
+        )
+        .route(
             "/api/employment/profiles/:profile_id/opportunities/:id/archive",
             post(employment::archive_opportunity_for_profile),
         )

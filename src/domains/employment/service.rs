@@ -238,6 +238,102 @@ impl EmploymentOpportunityService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
+
+    pub async fn generate_cover_letter(
+        &self,
+        opportunity: &EmploymentOpportunity,
+        context: &EmploymentContextBundle,
+        direction: &str,
+    ) -> Result<String, AppError> {
+        let profile = self
+            .repository
+            .get_profile(opportunity.profile_id)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound("Employment profile not found".to_string()))?;
+        let criteria = profile.criteria.unwrap_or_default();
+        let profile_context = render_cover_letter_context(context);
+        let opportunity_json = opportunity_scoring_json(opportunity);
+
+        if let Some(llm_service) = &self.llm {
+            return match llm_service
+                .generate_cover_letter(
+                    "qwen2.5:14b",
+                    &opportunity_json,
+                    &criteria,
+                    &profile_context,
+                    direction,
+                )
+                .await
+            {
+                Ok(cover_letter) => Ok(cover_letter),
+                Err(_) => Ok(fallback_cover_letter(opportunity, &criteria, direction)),
+            };
+        }
+
+        Ok(fallback_cover_letter(opportunity, &criteria, direction))
+    }
+}
+
+fn render_cover_letter_context(context: &EmploymentContextBundle) -> String {
+    let sections = [
+        ("Career profile", &context.career_profile),
+        ("Resume facts", &context.resume_facts),
+        ("Project evidence", &context.project_evidence),
+        ("Writing preferences", &context.writing_preferences),
+        (
+            "Salary/location preferences",
+            &context.salary_location_preferences,
+        ),
+        (
+            "Role targeting preferences",
+            &context.role_targeting_preferences,
+        ),
+    ];
+
+    sections
+        .iter()
+        .filter(|(_, items)| !items.is_empty())
+        .map(|(label, items)| {
+            let body = items
+                .iter()
+                .take(8)
+                .map(|item| format!("- {}: {}", item.title, item.body))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{label}:\n{body}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn fallback_cover_letter(
+    opportunity: &EmploymentOpportunity,
+    criteria: &str,
+    direction: &str,
+) -> String {
+    let title = opportunity.title.as_deref().unwrap_or("the role");
+    let company = opportunity.company.as_deref().unwrap_or("your team");
+    let direction = direction.trim();
+
+    format!(
+        "Hello,\n\nI am interested in {title} at {company}. The role appears aligned with my focus on Salesforce platform architecture, automation, and practical systems improvement.\n\nMy background is strongest where platform ownership, process design, automation, and cross-functional problem solving intersect. I look for opportunities where I can improve reliability, reduce manual work, and make Salesforce easier for teams to operate.\n\n{direction_block}Based on the current profile criteria, I would want to confirm scope, remote expectations, meeting load, and any availability or confidentiality constraints before moving forward.\n\nThank you for your time,\n",
+        title = title,
+        company = company,
+        direction_block = if direction.is_empty() {
+            String::new()
+        } else {
+            format!("{direction}\n\n")
+        },
+    )
+    .replace(
+        "Based on the current profile criteria",
+        if criteria.trim().is_empty() {
+            "Based on the available role information"
+        } else {
+            "Based on the current profile criteria"
+        },
+    )
 }
 
 fn opportunity_scoring_json(opportunity: &EmploymentOpportunity) -> serde_json::Value {

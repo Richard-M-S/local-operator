@@ -60,6 +60,17 @@ pub struct StatusUpdateRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GenerateCoverLetterRequest {
+    #[serde(default)]
+    pub direction: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoverLetterResponse {
+    pub cover_letter: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateEmploymentProfileRequest {
     pub display_name: String,
     pub email: Option<String>,
@@ -384,6 +395,25 @@ pub async fn score_opportunity_for_profile(
     get_profile_opportunity(&state, profile_id, opportunity_id).await?;
     let opportunity = state.employment.score_opportunity(opportunity_id).await?;
     Ok(Json(EmploymentOpportunityResponse { opportunity }))
+}
+
+pub async fn generate_cover_letter_for_profile(
+    State(state): State<AppState>,
+    Path((profile_id, opportunity_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<GenerateCoverLetterRequest>,
+) -> Result<Json<CoverLetterResponse>, AppError> {
+    let opportunity = get_profile_opportunity(&state, profile_id, opportunity_id).await?;
+    let context = state
+        .employment_context
+        .load_application_context_for_profile(profile_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let cover_letter = state
+        .employment
+        .generate_cover_letter(&opportunity, &context, &req.direction)
+        .await?;
+
+    Ok(Json(CoverLetterResponse { cover_letter }))
 }
 
 pub async fn archive_opportunity(

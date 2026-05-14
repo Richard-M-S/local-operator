@@ -131,4 +131,46 @@ Score both tracks and return only the JSON object.
             AppError::Internal(format!("Failed to parse LLM score response as JSON: {}", e))
         })
     }
+
+    pub async fn generate_cover_letter(
+        &self,
+        model: &str,
+        opportunity_json: &serde_json::Value,
+        profile_criteria: &str,
+        profile_context: &str,
+        direction: &str,
+    ) -> Result<String, AppError> {
+        let system = r#"
+You write concise, credible job application cover letters.
+Use only the supplied profile criteria, profile context, job data, and user direction.
+Do not invent employers, credentials, dates, certifications, or achievements.
+Avoid overclaiming, exaggerated enthusiasm, and generic filler.
+Keep the draft advisory and editable by the user.
+Return only the cover letter text.
+"#;
+
+        let prompt = format!(
+            r#"
+Profile criteria:
+{profile_criteria}
+
+Profile context:
+{profile_context}
+
+User direction for this letter:
+{direction}
+
+Opportunity JSON:
+{opportunity_json}
+
+Write a tailored cover letter. Prefer 3-5 short paragraphs. Do not include placeholders unless the source data is missing.
+"#,
+            profile_criteria = profile_criteria,
+            profile_context = profile_context,
+            direction = direction,
+            opportunity_json = serde_json::to_string_pretty(opportunity_json).unwrap_or_default()
+        );
+
+        self.ask_model(model, system, &prompt).await
+    }
 }
