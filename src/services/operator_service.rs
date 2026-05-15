@@ -7,9 +7,13 @@ use crate::{
     },
     error::AppError,
     models::api::{ChatResponse, CommandResponse},
+    models::session::{ChatMessage, ChatSession, TaskLink, TaskRequest},
+    op_tasks::models::{OpTaskRunStatus, TaskArtifact},
     op_tasks::service::OpTaskService,
+    readers::models::SearchResultItem,
     services::llm_router::LlmRouter,
     services::llm_service::LlmService,
+    session_memory::SessionMemoryRepository,
     tools::registry::ToolRegistry,
 };
 
@@ -24,6 +28,7 @@ pub struct OperatorService {
     llm_router: LlmRouter,
     op_tasks: OpTaskService,
     employment_repo: EmploymentRepository,
+    session_memory: SessionMemoryRepository,
 }
 
 impl OperatorService {
@@ -35,6 +40,7 @@ impl OperatorService {
         llm_router: LlmRouter,
         op_tasks: OpTaskService,
         employment_repo: EmploymentRepository,
+        session_memory: SessionMemoryRepository,
     ) -> Self {
         Self {
             tools,
@@ -44,6 +50,7 @@ impl OperatorService {
             llm_router,
             op_tasks,
             employment_repo,
+            session_memory,
         }
     }
 
@@ -62,18 +69,20 @@ impl OperatorService {
                 .await;
         }
 
+        let resolved_profile_id = profile_id.unwrap_or_else(default_employment_profile_id);
+
+        if let Some(input) = extract_employment_search_input(message) {
+            return self
+                .run_employment_search_chat_task(resolved_profile_id, message, input)
+                .await;
+        }
+
         if let Some(query) = self
-            .extract_search_query(
-                message,
-                profile_id.unwrap_or_else(default_employment_profile_id),
-            )
+            .extract_search_query(message, resolved_profile_id)
             .await?
         {
             return self
-                .run_search_web_chat_task(
-                    profile_id.unwrap_or_else(default_employment_profile_id),
-                    &query,
-                )
+                .run_search_web_chat_task(resolved_profile_id, &query)
                 .await;
         }
 
@@ -222,6 +231,113 @@ impl OperatorService {
         })
     }
 
+    async fn run_employment_search_chat_task(
+        &self,
+        profile_id: Uuid,
+        user_message: &str,
+        input: EmploymentSearchChatInput,
+    ) -> Result<ChatResponse, AppError> {
+        let memory = self
+            .create_task_request_memory(profile_id, user_message, "employment.search_opportunities")
+            .await?;
+
+        let task = self
+            .op_tasks
+            .create_task(
+                profile_id,
+                "employment.search_opportunities".to_string(),
+                "Chat Employment Search".to_string(),
+                Some("Created from Local Operator chat.".to_string()),
+                json!({
+                    "limit": input.limit,
+                    "create_opportunities": input.create_opportunities,
+                    "priority": "normal",
+                    "model_purpose": "task_extraction",
+                    "source": "operator_chat"
+                }),
+                true,
+            )
+            .await?;
+
+        self.session_memory
+            .update_task_request(memory.task_request_id, "running", Some(task.id), None, None)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        self.create_task_link(memory.task_request_id, "op_task", task.id, "created_task")
+            .await?;
+
+        let run = self.op_tasks.run_task(task.id).await?;
+        let artifact = run.artifacts.first();
+        let artifact_id = artifact.map(|artifact| artifact.id);
+        let status = if matches!(run.status, OpTaskRunStatus::Succeeded) {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        let message = employment_search_chat_message(artifact, run.summary.as_deref());
+
+        self.session_memory
+            .update_task_request(
+                memory.task_request_id,
+                status,
+                Some(task.id),
+                Some(run.id),
+                artifact_id,
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        self.session_memory
+            .update_chat_session_memory(
+                memory.session_id,
+                Some(memory.task_request_id),
+                Some(run.id),
+                artifact_id,
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        self.create_task_link(
+            memory.task_request_id,
+            "op_task_run",
+            run.id,
+            "produced_run",
+        )
+        .await?;
+        if let Some(artifact_id) = artifact_id {
+            self.create_task_link(
+                memory.task_request_id,
+                "task_artifact",
+                artifact_id,
+                "primary_artifact",
+            )
+            .await?;
+        }
+
+        let mut assistant_message =
+            ChatMessage::new(memory.session_id, "assistant".to_string(), message.clone());
+        assistant_message.task_request_id = Some(memory.task_request_id);
+        assistant_message.run_id = Some(run.id);
+        assistant_message.artifact_id = artifact_id;
+        self.session_memory
+            .create_chat_message(assistant_message)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+
+        let ok = matches!(run.status, OpTaskRunStatus::Succeeded);
+
+        Ok(ChatResponse {
+            ok,
+            mode: "chat_task::employment.search_opportunities".to_string(),
+            message,
+            data: json!({
+                "task_request_id": memory.task_request_id,
+                "chat_session_id": memory.session_id,
+                "task": task,
+                "run": run,
+                "artifact": artifact,
+            }),
+        })
+    }
+
     async fn extract_search_query(
         &self,
         message: &str,
@@ -280,6 +396,66 @@ impl OperatorService {
         }
 
         Ok(Some(query))
+    }
+
+    async fn create_task_request_memory(
+        &self,
+        profile_id: Uuid,
+        user_message: &str,
+        intent: &str,
+    ) -> Result<TaskChatMemory, AppError> {
+        let mut task_request = TaskRequest::new(
+            profile_id,
+            "operator_chat".to_string(),
+            user_message.to_string(),
+        );
+        task_request.intent = Some(intent.to_string());
+        task_request = self
+            .session_memory
+            .create_task_request(task_request)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+
+        let mut session = ChatSession::new(profile_id);
+        session.last_task_request_id = Some(task_request.id);
+        let session = self
+            .session_memory
+            .create_chat_session(session)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+
+        let mut user_chat_message =
+            ChatMessage::new(session.id, "user".to_string(), user_message.to_string());
+        user_chat_message.task_request_id = Some(task_request.id);
+        self.session_memory
+            .create_chat_message(user_chat_message)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+
+        Ok(TaskChatMemory {
+            task_request_id: task_request.id,
+            session_id: session.id,
+        })
+    }
+
+    async fn create_task_link(
+        &self,
+        task_request_id: Uuid,
+        target_type: &str,
+        target_id: Uuid,
+        relationship: &str,
+    ) -> Result<(), AppError> {
+        self.session_memory
+            .create_task_link(TaskLink::new(
+                "task_request".to_string(),
+                task_request_id,
+                target_type.to_string(),
+                target_id,
+                relationship.to_string(),
+            ))
+            .await
+            .map(|_| ())
+            .map_err(|err| AppError::Internal(err.to_string()))
     }
 
     pub async fn run_command(
@@ -382,4 +558,111 @@ fn extract_read_url(message: &str) -> Option<String> {
                 .to_string()
         })
         .filter(|url| !url.is_empty())
+}
+
+#[derive(Clone, Copy)]
+struct EmploymentSearchChatInput {
+    create_opportunities: bool,
+    limit: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TaskChatMemory {
+    task_request_id: Uuid,
+    session_id: Uuid,
+}
+
+fn extract_employment_search_input(message: &str) -> Option<EmploymentSearchChatInput> {
+    let normalized = message.to_lowercase();
+    let wants_search = normalized.contains("search")
+        || normalized.contains("find")
+        || normalized.contains("look for")
+        || normalized.contains("hunt");
+    let employment_context = normalized.contains("job")
+        || normalized.contains("opportunit")
+        || normalized.contains("employment")
+        || normalized.contains("profile criteria")
+        || normalized.contains("my criteria")
+        || normalized.contains("role")
+        || normalized.contains("roles");
+
+    if !(wants_search && employment_context) {
+        return None;
+    }
+
+    Some(EmploymentSearchChatInput {
+        create_opportunities: normalized.contains("create opportunit")
+            || normalized.contains("save opportunit")
+            || normalized.contains("add opportunit"),
+        limit: extract_requested_limit(&normalized).unwrap_or(10),
+    })
+}
+
+fn extract_requested_limit(normalized: &str) -> Option<usize> {
+    let words = normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+
+    for (index, word) in words.iter().enumerate() {
+        if matches!(*word, "top" | "limit" | "first") {
+            if let Some(next) = words.get(index + 1) {
+                if let Ok(limit) = next.parse::<usize>() {
+                    return Some(limit.clamp(1, 25));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn employment_search_chat_message(
+    artifact: Option<&TaskArtifact>,
+    fallback_summary: Option<&str>,
+) -> String {
+    let Some(artifact) = artifact else {
+        return fallback_summary
+            .unwrap_or("Employment search completed without an artifact.")
+            .to_string();
+    };
+
+    let results = artifact
+        .content_json
+        .as_ref()
+        .and_then(|json| json.get("results"))
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<SearchResultItem>>(value).ok())
+        .unwrap_or_default();
+
+    let created_count = artifact
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("created_opportunity_count"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+
+    if results.is_empty() {
+        return fallback_summary
+            .unwrap_or("No employment opportunities found.")
+            .to_string();
+    }
+
+    let mut message = format!("Found {} employment search results.", results.len());
+    if created_count > 0 {
+        message.push_str(&format!(" Created {} opportunities.", created_count));
+    }
+    message.push_str("\n\nTop results:");
+
+    for (index, result) in results.iter().take(5).enumerate() {
+        message.push_str(&format!(
+            "\n{}. {}\n   {}\n   {}",
+            index + 1,
+            result.title,
+            result.url,
+            result.snippet.as_deref().unwrap_or("")
+        ));
+    }
+
+    message
 }

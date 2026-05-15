@@ -28,7 +28,7 @@ const STATUS_PRESETS = [
 const ARTIFACT_TYPE_PRESETS = [
   { label: "All", value: "" },
   { label: "readable_web_page", value: "readable_web_page" },
-  { label: "search_results", value: "search_results" },
+  { label: "search_result_set", value: "search_result_set" },
   { label: "job_fit_report", value: "job_fit_report" },
   { label: "cover_letter", value: "cover_letter" },
   { label: "daily_report", value: "daily_report" },

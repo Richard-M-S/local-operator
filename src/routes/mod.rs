@@ -15,6 +15,7 @@ pub mod employment;
 pub mod health;
 pub mod op_tasks;
 pub mod openai_compat;
+pub mod openapi;
 pub mod operator;
 pub mod status;
 
@@ -184,6 +185,8 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health::health))
+        .route("/openapi.json", get(openapi::openapi_json))
+        .route("/api/tools/openapi.json", get(openapi::openapi_json))
         .merge(protected_routes)
         .with_state(state)
         .layer(cors)

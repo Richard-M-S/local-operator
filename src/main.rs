@@ -16,6 +16,7 @@ mod op_tasks;
 mod readers;
 mod routes;
 mod services;
+mod session_memory;
 mod tools;
 
 use app_state::AppState;

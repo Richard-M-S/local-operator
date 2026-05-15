@@ -10,6 +10,7 @@ use crate::services::{
     audit_service::AuditService, llm_router::LlmRouter, llm_service::LlmService,
     operator_service::OperatorService, policy_engine::PolicyEngine,
 };
+use crate::session_memory::SessionMemoryRepository;
 use crate::tools::registry::ToolRegistry;
 use sqlx::SqlitePool;
 
@@ -32,6 +33,7 @@ pub struct AppState {
     pub employment: EmploymentOpportunityService,
     #[allow(dead_code)]
     pub employment_context: EmploymentContextService,
+    pub session_memory: SessionMemoryRepository,
 }
 
 impl AppState {
@@ -52,14 +54,17 @@ impl AppState {
         let readers = ReaderService::new();
 
         let op_task_repo = OpTaskRepository::new(db.clone());
+        let employment_repo = EmploymentRepository::new(db.clone());
+        let session_memory = SessionMemoryRepository::new(db.clone());
+
         let op_task_runner = OpTaskRunner::new(
             tools.clone(),
             llm.clone(),
             readers.clone(),
             llm_router.clone(),
+            employment_repo.clone(),
         );
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
-        let employment_repo = EmploymentRepository::new(db.clone());
 
         let operator = OperatorService::new(
             tools.clone(),
@@ -69,6 +74,7 @@ impl AppState {
             llm_router.clone(),
             op_tasks.clone(),
             employment_repo.clone(),
+            session_memory.clone(),
         );
 
         let context_repo = ContextRepository::new(db.clone());
@@ -96,6 +102,7 @@ impl AppState {
             context,
             employment,
             employment_context,
+            session_memory,
         })
     }
 }
