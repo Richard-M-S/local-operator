@@ -61,11 +61,13 @@ impl AppState {
             ToolExecutionService::new(tools.clone(), policy.clone(), audit.clone());
         let model_execution = ModelExecutionService::new(llm.clone(), audit.clone());
 
-        let readers = ReaderService::new();
+        let readers = ReaderService::new(config.search.clone());
 
         let op_task_repo = OpTaskRepository::new(db.clone());
         let employment_repo = EmploymentRepository::new(db.clone());
         let session_memory = SessionMemoryRepository::new(db.clone());
+        let context_repo = ContextRepository::new(db.clone());
+        let context = ContextService::new(context_repo);
 
         let op_task_runner = OpTaskRunner::new(
             tool_execution.clone(),
@@ -73,6 +75,7 @@ impl AppState {
             readers.clone(),
             llm_router.clone(),
             employment_repo.clone(),
+            context.clone(),
         );
         let task_planner = TaskPlanner::new(llm_router.clone());
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner, task_planner);
@@ -85,9 +88,6 @@ impl AppState {
             employment_repo.clone(),
             session_memory.clone(),
         );
-
-        let context_repo = ContextRepository::new(db.clone());
-        let context = ContextService::new(context_repo);
 
         let employment = EmploymentOpportunityService::new(
             employment_repo,

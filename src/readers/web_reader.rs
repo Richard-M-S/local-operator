@@ -1,6 +1,4 @@
-use crate::readers::models::{
-    ReadSourceRequest, ReadSourceResult, ReaderSourceType, SearchResultItem, SearchResults,
-};
+use crate::readers::models::{ReadSourceRequest, ReadSourceResult, ReaderSourceType};
 use anyhow::{Context, Result};
 use regex::Regex;
 use reqwest::Client;
@@ -49,25 +47,6 @@ impl WebReader {
         })
     }
 
-    pub async fn search_web(&self, query: String, limit: usize) -> Result<SearchResults> {
-        let html = self
-            .client
-            .get("https://duckduckgo.com/html/")
-            .query(&[("q", query.as_str())])
-            .send()
-            .await
-            .context("failed to send search request")?
-            .error_for_status()
-            .context("search provider returned error status")?
-            .text()
-            .await
-            .context("failed to read search response body")?;
-
-        let results = Self::extract_search_results(&html, limit);
-
-        Ok(SearchResults { query, results })
-    }
-
     fn detect_type(source_url: &str) -> ReaderSourceType {
         let url = source_url.to_lowercase();
         if url.ends_with(".pdf") {
@@ -105,83 +84,6 @@ impl WebReader {
             .join(" ");
 
         collapsed.trim().to_string()
-    }
-
-    fn extract_search_results(html: &str, limit: usize) -> Vec<SearchResultItem> {
-        let result_re = Regex::new(
-            r#"(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>"#,
-        )
-        .unwrap();
-        let snippet_re =
-            Regex::new(r#"(?is)<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>"#).unwrap();
-        let snippets = snippet_re
-            .captures_iter(html)
-            .filter_map(|caps| caps.get(1).map(|m| Self::clean_html_fragment(m.as_str())))
-            .collect::<Vec<_>>();
-
-        result_re
-            .captures_iter(html)
-            .take(limit)
-            .enumerate()
-            .filter_map(|(index, caps)| {
-                let raw_url = caps.get(1)?.as_str();
-                let title = caps.get(2).map(|m| Self::clean_html_fragment(m.as_str()))?;
-                let url = Self::normalize_search_url(raw_url);
-
-                Some(SearchResultItem {
-                    title,
-                    url,
-                    snippet: snippets.get(index).cloned(),
-                })
-            })
-            .collect()
-    }
-
-    fn clean_html_fragment(fragment: &str) -> String {
-        let tag_re = Regex::new(r"(?is)<[^>]+>").unwrap();
-        let without_tags = tag_re.replace_all(fragment, " ");
-        Self::decode_html_entities(&without_tags)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn normalize_search_url(raw_url: &str) -> String {
-        let decoded = Self::decode_html_entities(raw_url);
-        if let Some(start) = decoded.find("uddg=") {
-            let value = &decoded[start + 5..];
-            let end = value.find('&').unwrap_or(value.len());
-            return Self::percent_decode(&value[..end]);
-        }
-
-        if decoded.starts_with("//") {
-            return format!("https:{}", decoded);
-        }
-
-        decoded
-    }
-
-    fn percent_decode(input: &str) -> String {
-        let bytes = input.as_bytes();
-        let mut output = Vec::with_capacity(bytes.len());
-        let mut index = 0;
-
-        while index < bytes.len() {
-            if bytes[index] == b'%' && index + 2 < bytes.len() {
-                if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
-                    if let Ok(value) = u8::from_str_radix(hex, 16) {
-                        output.push(value);
-                        index += 3;
-                        continue;
-                    }
-                }
-            }
-
-            output.push(bytes[index]);
-            index += 1;
-        }
-
-        String::from_utf8_lossy(&output).to_string()
     }
 
     fn decode_html_entities(input: &str) -> String {

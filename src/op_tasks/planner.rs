@@ -91,18 +91,26 @@ impl TaskPlanner {
     fn plan_employment_search(&self, task: &OpTask, run_id: Uuid) -> Vec<OpWorkItem> {
         let load_profile = OpWorkItem::planned(
             run_id,
-            "load_profile_criteria",
-            "Load employment profile criteria for search planning.",
+            "load_profile_context",
+            "Load employment profile and saved context for search planning.",
             "profile",
             1,
         );
 
+        let build_query = OpWorkItem::planned(
+            run_id,
+            "build_search_query",
+            "Build the search query from task input, user request, and profile defaults.",
+            "planning",
+            2,
+        );
+
         let mut search = OpWorkItem::planned(
             run_id,
-            "search_opportunities",
-            "Search job opportunities based on profile criteria.",
+            "run_search",
+            "Run web/job search and save raw results.",
             "reader",
-            2,
+            3,
         );
         search.tool_name = Some("reader.search_web".to_string());
         search.model_purpose = task
@@ -111,12 +119,40 @@ impl TaskPlanner {
             .and_then(|value| value.as_str())
             .map(|value| value.to_string());
 
+        let read_urls = OpWorkItem::planned(
+            run_id,
+            "read_result_urls",
+            "Read promising result URLs into readable page artifacts where possible.",
+            "reader",
+            4,
+        );
+
+        let mut extract = OpWorkItem::planned(
+            run_id,
+            "extract_candidates",
+            "Extract structured job/opportunity candidates from readable pages and search snippets.",
+            "model",
+            5,
+        );
+        extract.model_purpose = Some("task_extraction".to_string());
+        extract.model_name = Some(self.llm_router.task_extraction_model());
+
+        let mut score = OpWorkItem::planned(
+            run_id,
+            "score_matches",
+            "Score and classify extracted opportunity candidates.",
+            "model",
+            6,
+        );
+        score.model_purpose = Some("task_reasoning".to_string());
+        score.model_name = Some(self.llm_router.task_reasoning_model());
+
         let mut create = OpWorkItem::planned(
             run_id,
             "create_opportunities",
             "Create or refresh opportunity records from search results when requested.",
             "repository",
-            3,
+            7,
         );
         create.tool_args_json = Some(json!({
             "create_opportunities": task
@@ -126,6 +162,23 @@ impl TaskPlanner {
                 .unwrap_or(false)
         }));
 
-        vec![load_profile, search, create]
+        let summarize = OpWorkItem::planned(
+            run_id,
+            "summarize_run",
+            "Generate a final run summary from created artifacts and scored matches.",
+            "summary",
+            8,
+        );
+
+        vec![
+            load_profile,
+            build_query,
+            search,
+            read_urls,
+            extract,
+            score,
+            create,
+            summarize,
+        ]
     }
 }

@@ -364,6 +364,7 @@ impl OperatorService {
                 "Chat Employment Search".to_string(),
                 Some("Created from Local Operator chat.".to_string()),
                 json!({
+                    "user_request": input.user_request,
                     "limit": input.limit,
                     "create_opportunities": input.create_opportunities,
                     "priority": "normal",
@@ -777,8 +778,9 @@ fn extract_read_url(message: &str) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EmploymentSearchChatInput {
+    user_request: String,
     create_opportunities: bool,
     limit: usize,
 }
@@ -809,6 +811,7 @@ fn extract_employment_search_input(message: &str) -> Option<EmploymentSearchChat
     }
 
     Some(EmploymentSearchChatInput {
+        user_request: message.trim().to_string(),
         create_opportunities: normalized.contains("create opportunit")
             || normalized.contains("save opportunit")
             || normalized.contains("add opportunit"),

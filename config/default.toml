@@ -30,6 +30,9 @@ base_url = "http://localhost:11434"
 model = "qwen2.5:14b"
 timeout_seconds = 120
 
+[search]
+provider = "duckduckgo_html"
+
 [llm_router]
 fast_model = "qwen2.5:7b"
 default_model = "qwen2.5:14b"

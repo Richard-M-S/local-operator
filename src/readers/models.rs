@@ -33,12 +33,20 @@ pub struct SearchResultItem {
     pub title: String,
     pub url: String,
     pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchResults {
     pub query: String,
     pub results: Vec<SearchResultItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

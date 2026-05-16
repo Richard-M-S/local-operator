@@ -10,6 +10,8 @@ pub struct AppConfig {
     pub llm: LlmConfig,
     pub llm_router: LlmRouterConfig,
     #[serde(default)]
+    pub search: SearchConfig,
+    #[serde(default)]
     pub auth: AuthConfig,
 }
 
@@ -80,6 +82,19 @@ pub struct LlmConfig {
     #[allow(dead_code)]
     pub model: String,
     pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchConfig {
+    pub provider: String,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: "duckduckgo_html".to_string(),
+        }
+    }
 }
 
 impl AppConfig {

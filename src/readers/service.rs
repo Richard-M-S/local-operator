@@ -1,18 +1,24 @@
+use std::sync::Arc;
+
+use crate::config::SearchConfig;
 use crate::readers::models::{
     ReadSourceRequest, ReadSourceResult, ReaderSourceType, SearchResults,
 };
+use crate::readers::search::{DuckDuckGoHtmlSearchProvider, SearchProvider};
 use crate::readers::web_reader::WebReader;
 use anyhow::{anyhow, Result};
 
 #[derive(Clone)]
 pub struct ReaderService {
     web_reader: WebReader,
+    search_provider: Arc<dyn SearchProvider>,
 }
 
 impl ReaderService {
-    pub fn new() -> Self {
+    pub fn new(config: SearchConfig) -> Self {
         Self {
             web_reader: WebReader::new(),
+            search_provider: build_search_provider(&config),
         }
     }
 
@@ -28,7 +34,7 @@ impl ReaderService {
     }
 
     pub async fn search_web(&self, query: String, limit: usize) -> Result<SearchResults> {
-        self.web_reader.search_web(query, limit).await
+        self.search_provider.search(query, limit).await
     }
 
     pub async fn read_source(&self, request: ReadSourceRequest) -> Result<ReadSourceResult> {
@@ -58,5 +64,12 @@ impl ReaderService {
         } else {
             ReaderSourceType::WebPage
         }
+    }
+}
+
+fn build_search_provider(config: &SearchConfig) -> Arc<dyn SearchProvider> {
+    match config.provider.as_str() {
+        "duckduckgo_html" => Arc::new(DuckDuckGoHtmlSearchProvider::new()),
+        _ => Arc::new(DuckDuckGoHtmlSearchProvider::new()),
     }
 }
