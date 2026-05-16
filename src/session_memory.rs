@@ -45,6 +45,22 @@ impl SessionMemoryRepository {
         Ok(request)
     }
 
+    pub async fn get_task_request(&self, request_id: Uuid) -> anyhow::Result<Option<TaskRequest>> {
+        let row = sqlx::query_as::<_, TaskRequestRow>(
+            r#"
+            SELECT id, profile_id, source, user_request, intent, status, op_task_id, run_id,
+                   primary_artifact_id, created_at, updated_at
+            FROM task_requests
+            WHERE id = ?1
+            "#,
+        )
+        .bind(request_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(Into::into))
+    }
+
     pub async fn update_task_request(
         &self,
         request_id: Uuid,
@@ -280,6 +296,41 @@ impl SessionMemoryRepository {
         .await?;
 
         Ok(link)
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TaskRequestRow {
+    id: String,
+    profile_id: String,
+    source: String,
+    user_request: String,
+    intent: Option<String>,
+    status: String,
+    op_task_id: Option<String>,
+    run_id: Option<String>,
+    primary_artifact_id: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<TaskRequestRow> for TaskRequest {
+    fn from(row: TaskRequestRow) -> Self {
+        Self {
+            id: Uuid::parse_str(&row.id).unwrap(),
+            profile_id: Uuid::parse_str(&row.profile_id).unwrap(),
+            source: row.source,
+            user_request: row.user_request,
+            intent: row.intent,
+            status: row.status,
+            op_task_id: row.op_task_id.and_then(|id| Uuid::parse_str(&id).ok()),
+            run_id: row.run_id.and_then(|id| Uuid::parse_str(&id).ok()),
+            primary_artifact_id: row
+                .primary_artifact_id
+                .and_then(|id| Uuid::parse_str(&id).ok()),
+            created_at: row.created_at.parse().unwrap_or_else(|_| Utc::now()),
+            updated_at: row.updated_at.parse().unwrap_or_else(|_| Utc::now()),
+        }
     }
 }
 

@@ -8,6 +8,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::app_state::AppState;
 
+pub mod artifacts;
 pub mod audit;
 pub mod auth;
 pub mod context;
@@ -18,10 +19,21 @@ pub mod openai_compat;
 pub mod openapi;
 pub mod operator;
 pub mod status;
+pub mod task_requests;
 
 pub fn router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/api/status", get(status::status))
+        .route("/api/artifacts/latest", get(artifacts::latest))
+        .route(
+            "/api/artifacts/:artifact_id/continue",
+            post(artifacts::continue_from_artifact),
+        )
+        .route("/api/task-requests", post(task_requests::create))
+        .route(
+            "/api/task-requests/:task_request_id/run",
+            post(task_requests::run),
+        )
         .route(
             "/api/employment/profiles",
             get(employment::list_profiles).post(employment::create_profile),

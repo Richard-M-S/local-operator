@@ -21,6 +21,7 @@ impl TaskPlanner {
             "reader.read_url" => self.plan_reader_read_url(task, run_id),
             "reader.search_web" => self.plan_reader_search_web(task, run_id),
             "employment.search_opportunities" => self.plan_employment_search(task, run_id),
+            "artifact.summarize" => self.plan_artifact_summary(task, run_id),
             _ => vec![OpWorkItem::planned(
                 run_id,
                 "unsupported_task",
@@ -86,6 +87,21 @@ impl TaskPlanner {
             .map(|value| value.to_string());
 
         vec![search]
+    }
+
+    fn plan_artifact_summary(&self, task: &OpTask, run_id: Uuid) -> Vec<OpWorkItem> {
+        let mut summarize = OpWorkItem::planned(
+            run_id,
+            "summarize_artifact",
+            "Summarize or explain a prior artifact for continuation.",
+            "model",
+            1,
+        );
+        summarize.model_purpose = Some("artifact_continuation".to_string());
+        summarize.model_name = Some(self.llm_router.task_summary_model());
+        summarize.tool_args_json = Some(task.input_json.clone());
+
+        vec![summarize]
     }
 
     fn plan_employment_search(&self, task: &OpTask, run_id: Uuid) -> Vec<OpWorkItem> {

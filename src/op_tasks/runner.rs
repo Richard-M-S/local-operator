@@ -53,6 +53,7 @@ impl OpTaskRunner {
             "employment.search_opportunities" => {
                 self.run_employment_search_opportunities(&task, run).await
             }
+            "artifact.summarize" => self.run_artifact_summary(&task, run).await,
             _ => {
                 let message = format!("unsupported task type: {}", task.task_type);
                 if let Ok(step_id) = start_step(&mut run, "unsupported_task") {
@@ -160,6 +161,100 @@ impl OpTaskRunner {
         run.summary = Some(summary);
         run.status = OpTaskRunStatus::Succeeded;
         run.completed_at = Some(Utc::now());
+        Ok(run)
+    }
+
+    async fn run_artifact_summary(
+        &self,
+        task: &OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
+        let step_id = start_step(&mut run, "summarize_artifact")?;
+        let input: ArtifactSummaryInput = match serde_json::from_value(task.input_json.clone()) {
+            Ok(input) => input,
+            Err(err) => {
+                finish_step_with_error(&mut run, step_id, &err.to_string());
+                return Err(anyhow!(err)).context("invalid artifact.summarize input_json");
+            }
+        };
+        if let Some(source_artifact_id) = input.source_artifact_id {
+            push_step_input_artifact(&mut run, step_id, source_artifact_id);
+        }
+
+        let content = input
+            .content_text
+            .clone()
+            .or_else(|| {
+                input
+                    .content_json
+                    .as_ref()
+                    .and_then(|value| serde_json::to_string_pretty(value).ok())
+            })
+            .unwrap_or_else(|| "Artifact has no saved content.".to_string());
+        let prompt = format!(
+            "User continuation request: {}\n\nArtifact name: {}\nArtifact type: {}\n\nArtifact content:\n{}",
+            input.user_request,
+            input.artifact_name,
+            input.artifact_type,
+            truncate_chars(&content, 12000)
+        );
+        let system = "You are Local Operator. Continue from the supplied artifact. Be concise, concrete, and preserve useful IDs, URLs, scores, and next steps.";
+        let summary = self
+            .model_execution
+            .ask_model(
+                &self.llm_router.task_summary_model(),
+                system,
+                &prompt,
+                ExecutionContext::for_work_item(task.id, run.id, step_id)
+                    .with_model_purpose("artifact_continuation")
+                    .with_input_summary(format!(
+                        "Continue from {} artifact {}",
+                        input.artifact_type,
+                        input
+                            .source_artifact_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                format!(
+                    "Continuation from artifact '{}':\n\n{}",
+                    input.artifact_name,
+                    truncate_chars(&content, 3000)
+                )
+            });
+
+        let artifact_id = Uuid::new_v4();
+        run.artifacts.push(TaskArtifact {
+            id: artifact_id,
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(step_id),
+            name: format!("Continuation summary for {}", input.artifact_name),
+            artifact_type: "artifact_continuation_summary".to_string(),
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(json!({
+                "source_artifact_id": input.source_artifact_id.map(|id| id.to_string()),
+                "source_artifact_type": input.artifact_type,
+                "user_request": input.user_request,
+            })),
+            content_text: Some(summary.clone()),
+            content_json: Some(json!({
+                "summary": summary,
+            })),
+        });
+        finish_step(
+            &mut run,
+            step_id,
+            Some("Created artifact continuation summary.".to_string()),
+            vec![artifact_id],
+        );
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some("Artifact continuation summary completed.".to_string());
+
         Ok(run)
     }
 
@@ -379,24 +474,43 @@ impl OpTaskRunner {
             json!({
                 "query": search_query,
                 "limit": limit,
+                "source_artifact_id": input.source_artifact_id,
+                "source_artifact_type": input.source_artifact_type,
             }),
         );
-        let results = match self.readers.search_web(search_query.clone(), limit).await {
-            Ok(results) => results,
-            Err(err) => {
-                finish_step_with_error(&mut run, search_step_id, &err.to_string());
-                return Err(err).context("failed to search web for opportunities");
+        if let Some(source_artifact_id) = input.source_artifact_id {
+            push_step_input_artifact(&mut run, search_step_id, source_artifact_id);
+        }
+        let (results_query, search_results) = if input.seed_search_results.is_empty() {
+            match self.readers.search_web(search_query.clone(), limit).await {
+                Ok(results) => (results.query, results.results),
+                Err(err) => {
+                    finish_step_with_error(&mut run, search_step_id, &err.to_string());
+                    return Err(err).context("failed to search web for opportunities");
+                }
             }
+        } else {
+            (
+                input
+                    .source_query
+                    .clone()
+                    .unwrap_or_else(|| search_query.clone()),
+                input
+                    .seed_search_results
+                    .clone()
+                    .into_iter()
+                    .take(limit)
+                    .collect(),
+            )
         };
-        let search_results = results.results.clone();
 
-        let content_text = if results.results.is_empty() {
+        let content_text = if search_results.is_empty() {
             "No job opportunities found for profile criteria.".to_string()
         } else {
-            render_search_results_text(&results.query, &results.results)
+            render_search_results_text(&results_query, &search_results)
         };
 
-        let result_count = results.results.len();
+        let result_count = search_results.len();
         let artifact_id = Uuid::new_v4();
 
         run.artifacts.push(TaskArtifact {
@@ -418,12 +532,14 @@ impl OpTaskRunner {
                 "create_opportunities": input.create_opportunities,
                 "min_score": min_score,
                 "profile_display_name": profile.display_name,
+                "source_artifact_id": input.source_artifact_id.map(|id| id.to_string()),
+                "source_artifact_type": input.source_artifact_type,
             })),
             content_text: Some(content_text),
             content_json: Some(json!({
                 "criteria": profile.criteria,
-                "query": results.query,
-                "results": results.results,
+                "query": results_query,
+                "results": search_results,
                 "profile_id": run.profile_id.to_string(),
             })),
         });
@@ -436,10 +552,30 @@ impl OpTaskRunner {
 
         let read_step_id = start_step(&mut run, "read_result_urls")?;
         push_step_input_artifact(&mut run, read_step_id, artifact_id);
+        if let Some(source_artifact_id) = input.source_artifact_id {
+            push_step_input_artifact(&mut run, read_step_id, source_artifact_id);
+        }
         let mut readable_pages = Vec::new();
         let mut read_failures = Vec::new();
 
-        for result in search_results.iter().take(read_limit) {
+        for seed_page in input.seed_readable_pages.iter().take(read_limit) {
+            readable_pages.push(ReadablePageForExtraction {
+                artifact_id: seed_page.artifact_id.unwrap_or(artifact_id),
+                source_url: seed_page.source_url.clone(),
+                title: seed_page.title.clone(),
+                snippet: seed_page.snippet.clone(),
+                text: seed_page.text.clone(),
+            });
+        }
+
+        let remaining_read_limit = read_limit.saturating_sub(readable_pages.len());
+        for result in search_results.iter().take(remaining_read_limit) {
+            if readable_pages
+                .iter()
+                .any(|page| page.source_url == result.url)
+            {
+                continue;
+            }
             match self.readers.read_url(result.url.clone()).await {
                 Ok(page) => {
                     let page_artifact_id = Uuid::new_v4();
@@ -507,9 +643,20 @@ impl OpTaskRunner {
             push_step_input_artifact(&mut run, extract_step_id, *readable_artifact_id);
         }
         let candidates_artifact_id = Uuid::new_v4();
-        let mut candidates = Vec::new();
+        let mut candidates = input
+            .seed_candidates
+            .clone()
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
 
         for page in &readable_pages {
+            if candidates
+                .iter()
+                .any(|candidate| candidate.source_url == page.source_url)
+            {
+                continue;
+            }
             let parsed = self
                 .model_execution
                 .parse_job_opportunity(
@@ -590,9 +737,20 @@ impl OpTaskRunner {
             .and_then(|metadata| metadata.get("criteria"))
             .and_then(|value| value.as_str())
             .unwrap_or("Score for fit against the employment profile.");
-        let mut scored_matches = Vec::new();
+        let mut scored_matches = input
+            .seed_scored_matches
+            .clone()
+            .into_iter()
+            .take(limit)
+            .collect::<Vec<_>>();
 
         for candidate in &candidates {
+            if scored_matches
+                .iter()
+                .any(|scored_match| scored_match.candidate.source_url == candidate.source_url)
+            {
+                continue;
+            }
             let candidate_json = serde_json::to_value(candidate)
                 .unwrap_or_else(|_| json!({ "source_url": candidate.source_url }));
             let scored = self
@@ -841,6 +999,44 @@ struct EmploymentSearchInput {
     limit: Option<usize>,
     #[serde(default)]
     min_score: Option<i64>,
+    #[serde(default)]
+    source_artifact_id: Option<Uuid>,
+    #[serde(default)]
+    source_artifact_type: Option<String>,
+    #[serde(default)]
+    source_query: Option<String>,
+    #[serde(default)]
+    seed_search_results: Vec<SearchResultItem>,
+    #[serde(default)]
+    seed_readable_pages: Vec<SeedReadablePage>,
+    #[serde(default)]
+    seed_candidates: Vec<OpportunityCandidate>,
+    #[serde(default)]
+    seed_scored_matches: Vec<ScoredOpportunityMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtifactSummaryInput {
+    user_request: String,
+    artifact_name: String,
+    artifact_type: String,
+    #[serde(default)]
+    source_artifact_id: Option<Uuid>,
+    #[serde(default)]
+    content_text: Option<String>,
+    #[serde(default)]
+    content_json: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SeedReadablePage {
+    #[serde(default)]
+    artifact_id: Option<Uuid>,
+    source_url: String,
+    title: String,
+    #[serde(default)]
+    snippet: Option<String>,
+    text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1114,6 +1310,16 @@ fn clean_score_text(value: &str) -> String {
 
 fn clamp_score(value: i64) -> i64 {
     value.clamp(0, 100)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{}...", truncated)
+    } else {
+        truncated
+    }
 }
 
 fn start_step(run: &mut OpTaskRun, name: &str) -> anyhow::Result<Uuid> {

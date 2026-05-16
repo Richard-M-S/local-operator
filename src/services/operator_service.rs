@@ -1,4 +1,5 @@
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
@@ -8,13 +9,30 @@ use crate::{
     error::AppError,
     models::api::{ChatResponse, CommandResponse},
     models::session::{ChatMessage, ChatSession, TaskLink, TaskRequest},
-    op_tasks::models::{OpTaskRunStatus, TaskArtifact},
+    op_tasks::models::{OpTask, OpTaskRunStatus, TaskArtifact},
     op_tasks::service::OpTaskService,
     readers::models::SearchResultItem,
     services::execution::{ExecutionContext, ModelExecutionService, ToolExecutionService},
     services::llm_router::LlmRouter,
     session_memory::SessionMemoryRepository,
 };
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CreateTaskFromMessageResponse {
+    pub task_request: TaskRequest,
+    pub task: OpTask,
+    pub intent: String,
+    pub suggested_next_action: Value,
+}
+
+#[derive(Clone, Debug)]
+struct ClassifiedTaskRequest {
+    intent: String,
+    task_type: String,
+    name: String,
+    description: Option<String>,
+    input_json: Value,
+}
 
 #[derive(Clone)]
 pub struct OperatorService {
@@ -81,6 +99,142 @@ impl OperatorService {
             false,
         )
         .await
+    }
+
+    pub async fn create_task_from_message(
+        &self,
+        message: &str,
+        profile_id: Uuid,
+        source: &str,
+    ) -> Result<CreateTaskFromMessageResponse, AppError> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(AppError::BadRequest("message cannot be empty".to_string()));
+        }
+
+        let source = source.trim();
+        let source = if source.is_empty() { "api" } else { source };
+        let classified = self
+            .classify_task_request(message, profile_id, source)
+            .await?;
+
+        let task = self
+            .op_tasks
+            .create_task(
+                profile_id,
+                classified.task_type.clone(),
+                classified.name,
+                classified.description,
+                classified.input_json,
+                true,
+            )
+            .await?;
+
+        let mut task_request =
+            TaskRequest::new(profile_id, source.to_string(), message.to_string());
+        task_request.intent = Some(classified.intent.clone());
+        task_request.status = "created".to_string();
+        task_request.op_task_id = Some(task.id);
+        let task_request = self
+            .session_memory
+            .create_task_request(task_request)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+
+        self.create_task_link(task_request.id, "op_task", task.id, "created_task")
+            .await?;
+
+        let suggested_next_action = json!({
+            "action": "run_task",
+            "method": "POST",
+            "path": format!("/api/task-requests/{}/run", task_request.id),
+            "description": "Run the created task when ready."
+        });
+
+        Ok(CreateTaskFromMessageResponse {
+            task_request,
+            task,
+            intent: classified.intent,
+            suggested_next_action,
+        })
+    }
+
+    async fn classify_task_request(
+        &self,
+        message: &str,
+        _profile_id: Uuid,
+        source: &str,
+    ) -> Result<ClassifiedTaskRequest, AppError> {
+        if let Some(url) = extract_read_url(message) {
+            return Ok(ClassifiedTaskRequest {
+                intent: "reader.read_url".to_string(),
+                task_type: "reader.read_url".to_string(),
+                name: "Read URL".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "url": url,
+                    "user_request": message,
+                    "priority": "normal",
+                    "model_purpose": "task_extraction",
+                    "source": source
+                }),
+            });
+        }
+
+        if let Some(input) = extract_employment_search_input(message) {
+            return Ok(ClassifiedTaskRequest {
+                intent: "employment.search_opportunities".to_string(),
+                task_type: "employment.search_opportunities".to_string(),
+                name: "Employment Search".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "user_request": input.user_request,
+                    "limit": input.limit,
+                    "create_opportunities": input.create_opportunities,
+                    "priority": "normal",
+                    "model_purpose": "task_extraction",
+                    "source": source
+                }),
+            });
+        }
+
+        let normalized = message.to_lowercase();
+        if is_system_status_request(&normalized) {
+            return Ok(ClassifiedTaskRequest {
+                intent: "system.status_report".to_string(),
+                task_type: "system.status_report".to_string(),
+                name: "System Status Report".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "user_request": message,
+                    "priority": "normal",
+                    "model_purpose": "task_summary",
+                    "source": source
+                }),
+            });
+        }
+
+        if let Some(query) = extract_reader_search_query(message) {
+            return Ok(ClassifiedTaskRequest {
+                intent: "reader.search_web".to_string(),
+                task_type: "reader.search_web".to_string(),
+                name: "Web Search".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "query": query,
+                    "limit": extract_requested_limit(&normalized).unwrap_or(10),
+                    "user_request": message,
+                    "priority": "normal",
+                    "model_purpose": "task_extraction",
+                    "source": source
+                }),
+            });
+        }
+
+        Err(AppError::BadRequest(format!(
+            "could not classify task request '{}'",
+            message
+        )))
     }
 
     async fn run_chat_from_source(
@@ -778,6 +932,36 @@ fn extract_read_url(message: &str) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+fn extract_reader_search_query(message: &str) -> Option<String> {
+    let normalized = message.to_lowercase();
+    let wants_search = normalized.contains("search")
+        || normalized.contains("find")
+        || normalized.contains("look for")
+        || normalized.contains("look up");
+
+    if !wants_search {
+        return None;
+    }
+
+    let mut query = message
+        .trim()
+        .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?'))
+        .to_string();
+
+    for prefix in ["search for", "search", "find", "look for", "look up"] {
+        if query.to_lowercase().starts_with(prefix) {
+            query = query[prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    if query.is_empty() {
+        return None;
+    }
+
+    Some(query)
+}
+
 #[derive(Clone)]
 struct EmploymentSearchChatInput {
     user_request: String,
@@ -838,6 +1022,16 @@ fn extract_requested_limit(normalized: &str) -> Option<usize> {
     None
 }
 
+fn is_system_status_request(normalized: &str) -> bool {
+    let normalized = normalized.trim();
+    matches!(
+        normalized,
+        "status" | "get status" | "system status" | "status report" | "health"
+    ) || normalized.contains("system status")
+        || normalized.contains("status report")
+        || normalized.contains("health check")
+}
+
 fn employment_search_chat_message(
     artifact: Option<&TaskArtifact>,
     fallback_summary: Option<&str>,
@@ -886,4 +1080,45 @@ fn employment_search_chat_message(
     }
 
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_employment_search_input, extract_read_url, extract_reader_search_query,
+        is_system_status_request,
+    };
+
+    #[test]
+    fn extracts_reader_url_requests() {
+        assert_eq!(
+            extract_read_url("Read https://example.com/jobs."),
+            Some("https://example.com/jobs".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_general_web_search_without_job_rewrite() {
+        assert_eq!(
+            extract_reader_search_query("Search for Rust async trait examples."),
+            Some("Rust async trait examples".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_employment_search_intake() {
+        let input = extract_employment_search_input(
+            "Search for Salesforce architect jobs using my profile criteria and create opportunities for the top 5.",
+        )
+        .expect("employment search intent");
+
+        assert!(input.create_opportunities);
+        assert_eq!(input.limit, 5);
+    }
+
+    #[test]
+    fn detects_system_status_requests() {
+        assert!(is_system_status_request("system status"));
+        assert!(is_system_status_request("run a health check"));
+    }
 }
