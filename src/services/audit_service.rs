@@ -1,5 +1,6 @@
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
@@ -20,7 +21,20 @@ impl AuditService {
         Self { db }
     }
 
-    pub async fn record_tool_call(&self, action: &str, ok: bool) -> anyhow::Result<()> {
+    pub async fn record_execution_attempt(
+        &self,
+        record: ExecutionAuditRecord,
+    ) -> anyhow::Result<()> {
+        let ok = record.allowed && record.success;
+        let action = format!("{}:{}", record.execution_type, record.name);
+        let actions_json = serde_json::to_string(&record)?;
+        let results_json = serde_json::json!({
+            "success": record.success,
+            "error": record.error,
+            "output_artifact_ids": record.output_artifact_ids,
+        })
+        .to_string();
+
         sqlx::query(
             r#"
             INSERT INTO audit_log (
@@ -32,15 +46,22 @@ impl AuditService {
         .bind(Uuid::new_v4().to_string())
         .bind(Utc::now().to_rfc3339())
         .bind(action)
-        .bind("tool_call")
-        .bind(0_i32)
+        .bind(
+            record
+                .model_purpose
+                .clone()
+                .unwrap_or_else(|| record.execution_type.clone()),
+        )
+        .bind(record.risk_tier.unwrap_or(0))
         .bind(if ok { 1 } else { 0 })
-        .bind(serde_json::json!([{ "tool": action }]).to_string())
-        .bind(serde_json::json!({ "ok": ok }).to_string())
-        .bind(if ok {
-            "tool call succeeded"
+        .bind(actions_json)
+        .bind(results_json)
+        .bind(if record.success {
+            "execution succeeded".to_string()
         } else {
-            "tool call failed"
+            record
+                .error
+                .unwrap_or_else(|| "execution failed".to_string())
         })
         .execute(&self.db)
         .await?;
@@ -70,6 +91,24 @@ impl AuditService {
             })
             .collect())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionAuditRecord {
+    pub execution_type: String,
+    pub name: String,
+    pub task_id: Option<Uuid>,
+    pub run_id: Option<Uuid>,
+    pub work_item_id: Option<Uuid>,
+    pub model_purpose: Option<String>,
+    pub input_summary: Option<String>,
+    pub args_json: Option<Value>,
+    pub policy_decision: String,
+    pub risk_tier: Option<i32>,
+    pub allowed: bool,
+    pub success: bool,
+    pub error: Option<String>,
+    pub output_artifact_ids: Vec<Uuid>,
 }
 
 #[derive(FromRow)]

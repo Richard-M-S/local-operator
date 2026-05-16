@@ -9,6 +9,7 @@ use crate::{
     error::AppError,
     models::session::{ChatMessage, ChatSession},
     op_tasks::models::TaskArtifact,
+    services::execution::ExecutionContext,
 };
 
 #[derive(Deserialize)]
@@ -125,11 +126,6 @@ pub async fn chat_completions(
         response_artifact_id = json_uuid_path(&response.data, &["artifact", "id"]);
         response.message
     } else {
-        let llm = state
-            .llm
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
-
         let system = req
             .messages
             .iter()
@@ -140,7 +136,17 @@ pub async fn chat_completions(
 
         let transcript = render_full_transcript(&persisted_messages, &req.messages);
 
-        llm.ask_model(&req.model, &system, &transcript).await?
+        state
+            .model_execution
+            .ask_model(
+                &req.model,
+                &system,
+                &transcript,
+                ExecutionContext::default()
+                    .with_model_purpose("openai_compat_chat")
+                    .with_input_summary(user_message.chars().take(240).collect::<String>()),
+            )
+            .await?
     };
 
     persist_chat_message(

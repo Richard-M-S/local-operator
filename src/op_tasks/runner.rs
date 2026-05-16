@@ -3,9 +3,8 @@ use crate::op_tasks::models::{
     OpTask, OpTaskRun, OpTaskRunStatus, ReadUrlInput, SearchWebInput, TaskArtifact,
 };
 use crate::readers::ReaderService;
+use crate::services::execution::{ExecutionContext, ModelExecutionService, ToolExecutionService};
 use crate::services::llm_router::LlmRouter;
-use crate::services::llm_service::LlmService;
-use crate::tools::registry::ToolRegistry;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use serde_json::json;
@@ -14,8 +13,8 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct OpTaskRunner {
-    tools: ToolRegistry,
-    llm: Option<LlmService>,
+    tool_execution: ToolExecutionService,
+    model_execution: ModelExecutionService,
     readers: ReaderService,
     llm_router: LlmRouter,
     employment_repo: EmploymentRepository,
@@ -23,15 +22,15 @@ pub struct OpTaskRunner {
 
 impl OpTaskRunner {
     pub fn new(
-        tools: ToolRegistry,
-        llm: Option<LlmService>,
+        tool_execution: ToolExecutionService,
+        model_execution: ModelExecutionService,
         readers: ReaderService,
         llm_router: LlmRouter,
         employment_repo: EmploymentRepository,
     ) -> Self {
         Self {
-            tools,
-            llm,
+            tool_execution,
+            model_execution,
             readers,
             llm_router,
             employment_repo,
@@ -68,11 +67,22 @@ impl OpTaskRunner {
         mut run: OpTaskRun,
     ) -> anyhow::Result<OpTaskRun> {
         let collect_step_id = start_step(&mut run, "collect_system_status")?;
-        let result = match self.tools.execute("system.get_status", json!({})).await {
+        let result = match self
+            .tool_execution
+            .execute(
+                "system.get_status",
+                json!({}),
+                false,
+                ExecutionContext::for_work_item(_task.id, run.id, collect_step_id)
+                    .with_input_summary("Collect system status"),
+            )
+            .await
+        {
             Ok(result) => result,
             Err(err) => {
                 finish_step_with_error(&mut run, collect_step_id, &err.to_string());
-                return Err(anyhow!(err)).context("failed to execute system.get_status tool");
+                return Err(anyhow!(err.to_string()))
+                    .context("failed to execute system.get_status tool");
             }
         };
         finish_step(
@@ -87,36 +97,36 @@ impl OpTaskRunner {
         let mut summary = format!("System status collected by {}", result.tool);
         let mut summary_details = format!("Prepared summary with model purpose task_summary.");
 
-        if let Some(llm) = &self.llm {
-            let prompt = format!(
-                "Summarize the following system status output in a short, actionable paragraph:\n\n{}",
-                serde_json::to_string_pretty(&result.output)
-                    .unwrap_or_else(|_| "<unserializable output>".to_string())
-            );
+        let prompt = format!(
+            "Summarize the following system status output in a short, actionable paragraph:\n\n{}",
+            serde_json::to_string_pretty(&result.output)
+                .unwrap_or_else(|_| "<unserializable output>".to_string())
+        );
+        let artifact_id = Uuid::new_v4();
 
-            match llm
-                .ask_model(
-                    &summary_model,
-                    "You are a system status summarization assistant.",
-                    &prompt,
-                )
-                .await
-            {
-                Ok(summary_text) => summary = summary_text,
-                Err(err) => {
-                    summary = format!(
-                        "System status collected, but LLM summarization failed: {}",
-                        err
-                    );
-                    summary_details =
-                        format!("LLM summarization failed; fallback summary used: {err}");
-                }
+        match self
+            .model_execution
+            .ask_model(
+                &summary_model,
+                "You are a system status summarization assistant.",
+                &prompt,
+                ExecutionContext::for_work_item(_task.id, run.id, summary_step_id)
+                    .with_model_purpose("task_summary")
+                    .with_input_summary("Summarize system status")
+                    .with_output_artifact(artifact_id),
+            )
+            .await
+        {
+            Ok(summary_text) => summary = summary_text,
+            Err(err) => {
+                summary = format!(
+                    "System status collected, but LLM summarization failed: {}",
+                    err
+                );
+                summary_details = format!("LLM summarization failed; fallback summary used: {err}");
             }
-        } else {
-            summary_details = "LLM disabled; fallback summary used.".to_string();
         }
 
-        let artifact_id = Uuid::new_v4();
         run.artifacts.push(TaskArtifact {
             id: artifact_id,
             profile_id: run.profile_id,

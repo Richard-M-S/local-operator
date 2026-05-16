@@ -11,20 +11,15 @@ use crate::{
     op_tasks::models::{OpTaskRunStatus, TaskArtifact},
     op_tasks::service::OpTaskService,
     readers::models::SearchResultItem,
+    services::execution::{ExecutionContext, ModelExecutionService, ToolExecutionService},
     services::llm_router::LlmRouter,
-    services::llm_service::LlmService,
     session_memory::SessionMemoryRepository,
-    tools::registry::ToolRegistry,
 };
-
-use super::{audit_service::AuditService, policy_engine::PolicyEngine};
 
 #[derive(Clone)]
 pub struct OperatorService {
-    tools: ToolRegistry,
-    policy: PolicyEngine,
-    audit: AuditService,
-    llm: Option<LlmService>,
+    tool_execution: ToolExecutionService,
+    model_execution: ModelExecutionService,
     llm_router: LlmRouter,
     op_tasks: OpTaskService,
     employment_repo: EmploymentRepository,
@@ -33,20 +28,16 @@ pub struct OperatorService {
 
 impl OperatorService {
     pub fn new(
-        tools: ToolRegistry,
-        policy: PolicyEngine,
-        audit: AuditService,
-        llm: Option<LlmService>,
+        tool_execution: ToolExecutionService,
+        model_execution: ModelExecutionService,
         llm_router: LlmRouter,
         op_tasks: OpTaskService,
         employment_repo: EmploymentRepository,
         session_memory: SessionMemoryRepository,
     ) -> Self {
         Self {
-            tools,
-            policy,
-            audit,
-            llm,
+            tool_execution,
+            model_execution,
             llm_router,
             op_tasks,
             employment_repo,
@@ -176,25 +167,29 @@ impl OperatorService {
             )
             .await?;
 
-        let llm = self
-            .llm
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
-
         let use_home_context = include_home && decision.needs_home_context;
 
         if use_home_context {
             let tool_name = "ha.get_overview";
+            let context = ExecutionContext {
+                input_summary: Some(message.chars().take(240).collect()),
+                ..ExecutionContext::default()
+            };
+            let result = self
+                .tool_execution
+                .execute(tool_name, json!({}), false, context.clone())
+                .await?;
 
-            let descriptor = self.tools.describe(tool_name).await?;
-            self.policy
-                .check_tool_execution(descriptor.risk_tier, false)?;
-
-            let result = self.tools.execute(tool_name, json!({})).await?;
-            let _ = self.audit.record_tool_call(tool_name, true).await;
-
-            let response = llm
-                .summarize_home_overview_with_model(&decision.model, message, &result.output)
+            let response = self
+                .model_execution
+                .summarize_home_overview_with_model(
+                    &decision.model,
+                    message,
+                    &result.output,
+                    context
+                        .with_model_purpose("chat_home_summary")
+                        .with_input_summary(message.chars().take(240).collect::<String>()),
+                )
                 .await?;
             self.complete_non_task_chat_request(memory, "succeeded", &response)
                 .await?;
@@ -218,7 +213,17 @@ impl OperatorService {
     Do not claim access to Home Assistant unless home context was included.
     "#;
 
-        let response = llm.ask_model(&decision.model, system, message).await?;
+        let response = self
+            .model_execution
+            .ask_model(
+                &decision.model,
+                system,
+                message,
+                ExecutionContext::default()
+                    .with_model_purpose("chat")
+                    .with_input_summary(message.chars().take(240).collect::<String>()),
+            )
+            .await?;
         self.complete_non_task_chat_request(memory, "succeeded", &response)
             .await?;
 
@@ -696,12 +701,16 @@ impl OperatorService {
             }
         };
 
-        let descriptor = self.tools.describe(tool_name).await?;
-        self.policy
-            .check_tool_execution(descriptor.risk_tier, confirm)?;
-
-        let result = self.tools.execute(tool_name, json!({})).await?;
-        let _ = self.audit.record_tool_call(tool_name, true).await;
+        let result = self
+            .tool_execution
+            .execute(
+                tool_name,
+                json!({}),
+                confirm,
+                ExecutionContext::default()
+                    .with_input_summary(input.chars().take(240).collect::<String>()),
+            )
+            .await?;
 
         Ok(CommandResponse {
             ok: true,
@@ -717,23 +726,25 @@ impl OperatorService {
         confirm: bool,
     ) -> Result<CommandResponse, AppError> {
         let tool_name = "ha.get_overview";
-
-        let descriptor = self.tools.describe(tool_name).await?;
-        self.policy
-            .check_tool_execution(descriptor.risk_tier, confirm)?;
-
-        let result = self.tools.execute(tool_name, json!({})).await?;
-        let _ = self.audit.record_tool_call(tool_name, true).await;
-
-        let llm = self
-            .llm
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("LLM service is not enabled".to_string()))?;
+        let context = ExecutionContext::default()
+            .with_input_summary(input.chars().take(240).collect::<String>());
+        let result = self
+            .tool_execution
+            .execute(tool_name, json!({}), confirm, context.clone())
+            .await?;
 
         let decision = self.llm_router.route(input);
 
-        let message = llm
-            .summarize_home_overview_with_model(&decision.model, input, &result.output)
+        let message = self
+            .model_execution
+            .summarize_home_overview_with_model(
+                &decision.model,
+                input,
+                &result.output,
+                context
+                    .with_model_purpose("command_home_summary")
+                    .with_input_summary(input.chars().take(240).collect::<String>()),
+            )
             .await?;
 
         Ok(CommandResponse {

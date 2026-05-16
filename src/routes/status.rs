@@ -1,26 +1,41 @@
 use axum::{extract::State, Json};
 
-use crate::{app_state::AppState, error::AppError};
+use crate::{app_state::AppState, error::AppError, services::execution::ExecutionContext};
 
 pub async fn status(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     let system = subsystem_result(
         state
-            .tools
-            .execute("system.get_status", serde_json::json!({}))
+            .tool_execution
+            .execute(
+                "system.get_status",
+                serde_json::json!({}),
+                false,
+                ExecutionContext::default().with_input_summary("status route system probe"),
+            )
             .await,
     );
 
     let docker = subsystem_result(
         state
-            .tools
-            .execute("docker.list_containers", serde_json::json!({}))
+            .tool_execution
+            .execute(
+                "docker.list_containers",
+                serde_json::json!({}),
+                false,
+                ExecutionContext::default().with_input_summary("status route docker probe"),
+            )
             .await,
     );
 
     let home = subsystem_result(
         state
-            .tools
-            .execute("ha.get_summary", serde_json::json!({}))
+            .tool_execution
+            .execute(
+                "ha.get_summary",
+                serde_json::json!({}),
+                false,
+                ExecutionContext::default().with_input_summary("status route home probe"),
+            )
             .await,
     );
 

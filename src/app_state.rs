@@ -7,8 +7,12 @@ use crate::domains::employment::{
 use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService, TaskPlanner};
 use crate::readers::ReaderService;
 use crate::services::{
-    audit_service::AuditService, llm_router::LlmRouter, llm_service::LlmService,
-    operator_service::OperatorService, policy_engine::PolicyEngine,
+    audit_service::AuditService,
+    execution::{ModelExecutionService, ToolExecutionService},
+    llm_router::LlmRouter,
+    llm_service::LlmService,
+    operator_service::OperatorService,
+    policy_engine::PolicyEngine,
 };
 use crate::session_memory::SessionMemoryRepository;
 use crate::tools::registry::ToolRegistry;
@@ -19,10 +23,13 @@ pub struct AppState {
     pub config: AppConfig,
     #[allow(dead_code)]
     pub db: SqlitePool,
-    pub tools: ToolRegistry,
-    pub policy: PolicyEngine,
+    #[allow(dead_code)]
+    tools: ToolRegistry,
+    #[allow(dead_code)]
+    policy: PolicyEngine,
     pub audit: AuditService,
-    pub llm: Option<LlmService>,
+    pub tool_execution: ToolExecutionService,
+    pub model_execution: ModelExecutionService,
     #[allow(dead_code)]
     pub llm_router: LlmRouter,
     pub operator: OperatorService,
@@ -50,6 +57,9 @@ impl AppState {
         } else {
             None
         };
+        let tool_execution =
+            ToolExecutionService::new(tools.clone(), policy.clone(), audit.clone());
+        let model_execution = ModelExecutionService::new(llm.clone(), audit.clone());
 
         let readers = ReaderService::new();
 
@@ -58,8 +68,8 @@ impl AppState {
         let session_memory = SessionMemoryRepository::new(db.clone());
 
         let op_task_runner = OpTaskRunner::new(
-            tools.clone(),
-            llm.clone(),
+            tool_execution.clone(),
+            model_execution.clone(),
             readers.clone(),
             llm_router.clone(),
             employment_repo.clone(),
@@ -68,10 +78,8 @@ impl AppState {
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner, task_planner);
 
         let operator = OperatorService::new(
-            tools.clone(),
-            policy.clone(),
-            audit.clone(),
-            llm.clone(),
+            tool_execution.clone(),
+            model_execution.clone(),
             llm_router.clone(),
             op_tasks.clone(),
             employment_repo.clone(),
@@ -84,7 +92,7 @@ impl AppState {
         let employment = EmploymentOpportunityService::new(
             employment_repo,
             op_tasks.clone(),
-            llm.clone(),
+            model_execution.clone(),
             llm_router.clone(),
         );
         let employment_context = EmploymentContextService::new(context.clone());
@@ -95,7 +103,8 @@ impl AppState {
             tools,
             policy,
             audit,
-            llm,
+            tool_execution,
+            model_execution,
             llm_router,
             operator,
             op_tasks,

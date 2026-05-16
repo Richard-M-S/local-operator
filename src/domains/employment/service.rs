@@ -17,15 +17,15 @@ use crate::{
     domains::employment::repository::EmploymentRepository,
     error::AppError,
     op_tasks::service::OpTaskService,
+    services::execution::{ExecutionContext, ModelExecutionService},
     services::llm_router::LlmRouter,
-    services::llm_service::LlmService,
 };
 
 #[derive(Clone)]
 pub struct EmploymentOpportunityService {
     pub repository: EmploymentRepository,
     op_tasks: OpTaskService,
-    llm: Option<LlmService>,
+    model_execution: ModelExecutionService,
     llm_router: LlmRouter,
 }
 
@@ -33,13 +33,13 @@ impl EmploymentOpportunityService {
     pub fn new(
         repository: EmploymentRepository,
         op_tasks: OpTaskService,
-        llm: Option<LlmService>,
+        model_execution: ModelExecutionService,
         llm_router: LlmRouter,
     ) -> Self {
         Self {
             repository,
             op_tasks,
-            llm,
+            model_execution,
             llm_router,
         }
     }
@@ -157,13 +157,16 @@ impl EmploymentOpportunityService {
         })?;
 
         // Use LLM to parse the job details
-        let llm_service = self
-            .llm
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("LLM service not available".to_string()))?;
         let model = self.llm_router.task_extraction_model();
-        let parsed: serde_json::Value = llm_service
-            .parse_job_opportunity(&model, description_text)
+        let parsed: serde_json::Value = self
+            .model_execution
+            .parse_job_opportunity(
+                &model,
+                description_text,
+                ExecutionContext::default()
+                    .with_model_purpose("employment_parse")
+                    .with_input_summary(format!("Parse opportunity {}", opportunity.id)),
+            )
             .await?;
 
         // Update opportunity with parsed data
@@ -223,15 +226,19 @@ impl EmploymentOpportunityService {
         });
 
         let job_json = opportunity_scoring_json(&opportunity);
-        let scored = if let Some(llm_service) = &self.llm {
-            let model = self.llm_router.task_reasoning_model();
-            llm_service
-                .score_job_opportunity(&model, &job_json, &criteria)
-                .await
-                .unwrap_or_else(|_| heuristic_score(&opportunity, &criteria))
-        } else {
-            heuristic_score(&opportunity, &criteria)
-        };
+        let model = self.llm_router.task_reasoning_model();
+        let scored = self
+            .model_execution
+            .score_job_opportunity(
+                &model,
+                &job_json,
+                &criteria,
+                ExecutionContext::default()
+                    .with_model_purpose("employment_score")
+                    .with_input_summary(format!("Score opportunity {}", opportunity.id)),
+            )
+            .await
+            .unwrap_or_else(|_| heuristic_score(&opportunity, &criteria));
 
         apply_scoring_output(&mut opportunity, scored);
 
@@ -261,24 +268,24 @@ impl EmploymentOpportunityService {
         let profile_context = render_cover_letter_context(context);
         let opportunity_json = opportunity_scoring_json(opportunity);
 
-        if let Some(llm_service) = &self.llm {
-            let model = self.llm_router.task_writing_model();
-            return match llm_service
-                .generate_cover_letter(
-                    &model,
-                    &opportunity_json,
-                    &criteria,
-                    &profile_context,
-                    direction,
-                )
-                .await
-            {
-                Ok(cover_letter) => Ok(cover_letter),
-                Err(_) => Ok(fallback_cover_letter(opportunity, &criteria, direction)),
-            };
+        let model = self.llm_router.task_writing_model();
+        match self
+            .model_execution
+            .generate_cover_letter(
+                &model,
+                &opportunity_json,
+                &criteria,
+                &profile_context,
+                direction,
+                ExecutionContext::default()
+                    .with_model_purpose("employment_cover_letter")
+                    .with_input_summary(format!("Generate cover letter for {}", opportunity.id)),
+            )
+            .await
+        {
+            Ok(cover_letter) => Ok(cover_letter),
+            Err(_) => Ok(fallback_cover_letter(opportunity, &criteria, direction)),
         }
-
-        Ok(fallback_cover_letter(opportunity, &criteria, direction))
     }
 }
 
