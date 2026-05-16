@@ -29,6 +29,14 @@ pub fn router(state: AppState) -> Router {
             "/api/artifacts/:artifact_id/continue",
             post(artifacts::continue_from_artifact),
         )
+        .route(
+            "/api/artifacts/chatgpt-escalation-requests",
+            post(artifacts::create_chatgpt_escalation_request),
+        )
+        .route(
+            "/api/artifacts/:artifact_id/chatgpt-escalation-response",
+            post(artifacts::save_chatgpt_escalation_response),
+        )
         .route("/api/task-requests", post(task_requests::create))
         .route(
             "/api/task-requests/:task_request_id/run",

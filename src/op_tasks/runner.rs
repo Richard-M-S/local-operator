@@ -1,3 +1,4 @@
+use crate::adapters::openai_escalation::OpenAiEscalationClient;
 use crate::context::{models::ContextKind, ContextService};
 use crate::domains::employment::{models::EmploymentOpportunity, repository::EmploymentRepository};
 use crate::op_tasks::models::{
@@ -21,6 +22,7 @@ pub struct OpTaskRunner {
     llm_router: LlmRouter,
     employment_repo: EmploymentRepository,
     context: ContextService,
+    openai_escalation: Option<OpenAiEscalationClient>,
 }
 
 impl OpTaskRunner {
@@ -31,6 +33,7 @@ impl OpTaskRunner {
         llm_router: LlmRouter,
         employment_repo: EmploymentRepository,
         context: ContextService,
+        openai_escalation: Option<OpenAiEscalationClient>,
     ) -> Self {
         Self {
             tool_execution,
@@ -39,6 +42,7 @@ impl OpTaskRunner {
             llm_router,
             employment_repo,
             context,
+            openai_escalation,
         }
     }
 
@@ -54,6 +58,7 @@ impl OpTaskRunner {
                 self.run_employment_search_opportunities(&task, run).await
             }
             "artifact.summarize" => self.run_artifact_summary(&task, run).await,
+            "system.escalate_to_chatgpt" => self.run_chatgpt_escalation(task, run).await,
             _ => {
                 let message = format!("unsupported task type: {}", task.task_type);
                 if let Ok(step_id) = start_step(&mut run, "unsupported_task") {
@@ -161,6 +166,268 @@ impl OpTaskRunner {
         run.summary = Some(summary);
         run.status = OpTaskRunStatus::Succeeded;
         run.completed_at = Some(Utc::now());
+        Ok(run)
+    }
+
+    async fn run_chatgpt_escalation(
+        &self,
+        task: OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
+        let collect_step_id = start_step(&mut run, "collect_escalation_context")?;
+        let input: ChatGptEscalationInput = match serde_json::from_value(task.input_json.clone()) {
+            Ok(input) => input,
+            Err(err) => {
+                finish_step_with_error(&mut run, collect_step_id, &err.to_string());
+                return Err(anyhow!(err)).context("invalid system.escalate_to_chatgpt input_json");
+            }
+        };
+
+        let user_request = clean_optional_text(input.user_request.as_deref())
+            .unwrap_or_else(|| "Escalate this Local Operator task to ChatGPT.".to_string());
+        let mode = clean_optional_text(input.mode.as_deref()).unwrap_or_else(|| "manual".into());
+        if !matches!(mode.as_str(), "manual" | "openai") {
+            let err = format!(
+                "unsupported ChatGPT escalation mode '{}'; supported modes are manual and openai",
+                mode
+            );
+            finish_step_with_error(&mut run, collect_step_id, &err);
+            return Err(anyhow!(err));
+        }
+
+        let context_query = clean_optional_text(input.context_query.as_deref())
+            .unwrap_or_else(|| user_request.clone());
+        let saved_context = match self
+            .context
+            .get_relevant_context(run.profile_id, &context_query, None)
+            .await
+        {
+            Ok(items) => items
+                .into_iter()
+                .take(input.context_limit.unwrap_or(8).clamp(1, 25))
+                .map(|item| {
+                    json!({
+                        "id": item.id,
+                        "kind": item.kind,
+                        "title": item.title,
+                        "body": item.body,
+                        "source_url": item.source_url,
+                        "source_artifact_id": item.source_artifact_id,
+                        "tags": item.tags,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                finish_step_with_error(&mut run, collect_step_id, &err.to_string());
+                return Err(err).context("failed to collect escalation context");
+            }
+        };
+
+        let collected_context = json!({
+            "task": {
+                "id": task.id,
+                "task_type": task.task_type,
+                "name": task.name,
+                "description": task.description,
+                "input_json": task.input_json,
+            },
+            "run": {
+                "id": run.id,
+                "profile_id": run.profile_id,
+            },
+            "user_request": user_request,
+            "escalation_mode": mode,
+            "desired_output": input.desired_output,
+            "saved_context": saved_context,
+            "supplied_context_text": input.context_text,
+            "supplied_context_json": input.context_json,
+        });
+        finish_step(
+            &mut run,
+            collect_step_id,
+            Some("Collected task input, user request, and saved profile context.".to_string()),
+            vec![],
+        );
+
+        let redact_step_id = start_step(&mut run, "redact_escalation_context")?;
+        let mut redaction_report = RedactionReport::default();
+        let redacted_context = redact_json_value(&collected_context, &mut redaction_report);
+        let privacy_classification =
+            classify_escalation_privacy(&collected_context, &redaction_report);
+        let policy_decision =
+            decide_escalation_policy(privacy_classification, input.confirm, &redaction_report);
+        if !policy_decision.allowed {
+            finish_step_with_error(&mut run, redact_step_id, &policy_decision.reason);
+            return Err(anyhow!(policy_decision.reason.clone()));
+        }
+        finish_step(
+            &mut run,
+            redact_step_id,
+            Some(format!(
+                "Privacy classification {:?}. Redacted {} sensitive keys and {} sensitive text values.",
+                privacy_classification,
+                redaction_report.redacted_keys,
+                redaction_report.redacted_text_values
+            )),
+            vec![],
+        );
+
+        let save_step_id = start_step(&mut run, "save_escalation_request")?;
+        let artifact_id = Uuid::new_v4();
+        let paste_prompt = render_chatgpt_escalation_prompt(
+            &user_request,
+            input.desired_output.as_deref(),
+            &redacted_context,
+            &redaction_report,
+        );
+
+        run.artifacts.push(TaskArtifact {
+            id: artifact_id,
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(save_step_id),
+            name: "ChatGPT escalation request".to_string(),
+            artifact_type: "chatgpt_escalation_request".to_string(),
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(json!({
+                "escalation_provider": "chatgpt",
+                "mode": mode,
+                "direction": "request",
+                "redaction": redaction_report,
+                "privacy_classification": privacy_classification,
+                "policy_decision": policy_decision,
+                "requires_confirmation": policy_decision.requires_confirmation,
+                "confirmed": input.confirm,
+                "task_id": task.id,
+                "openai_request_sends_only_redacted_content": mode == "openai",
+            })),
+            content_text: Some(paste_prompt.clone()),
+            content_json: Some(json!({
+                "mode": mode,
+                "provider": "chatgpt",
+                "user_request": user_request,
+                "desired_output": input.desired_output,
+                "redacted_context": redacted_context,
+                "redaction_report": redaction_report,
+                "privacy_classification": privacy_classification,
+                "policy_decision": policy_decision,
+                "actions_executed_by_local_operator": [],
+                "instructions": [
+                    if mode == "manual" {
+                        "Paste content_text into ChatGPT manually."
+                    } else {
+                        "OpenAI API provider sends only this redacted request content."
+                    },
+                    "Do not execute recommended actions automatically.",
+                    "Paste or inspect ChatGPT's answer through the saved response artifact."
+                ],
+            })),
+        });
+
+        let mut output_artifact_ids = vec![artifact_id];
+        let mut response_artifact_id = None;
+        if mode == "openai" {
+            let redacted_request = run
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == artifact_id)
+                .and_then(|artifact| artifact.content_json.clone())
+                .ok_or_else(|| anyhow!("escalation request artifact has no JSON content"))?;
+            let openai_result = match self.openai_escalation.as_ref() {
+                Some(client) => client.send_redacted_request(&redacted_request).await,
+                None => Err(crate::error::AppError::Internal(
+                    "OpenAI escalation provider is not enabled in configuration".to_string(),
+                )),
+            };
+            match openai_result {
+                Ok(output) => {
+                    let id = Uuid::new_v4();
+                    run.artifacts.push(TaskArtifact {
+                        id,
+                        profile_id: run.profile_id,
+                        run_id: run.id,
+                        work_item_id: Some(save_step_id),
+                        name: "ChatGPT escalation response".to_string(),
+                        artifact_type: "chatgpt_escalation_response".to_string(),
+                        location: None,
+                        created_at: Utc::now(),
+                        metadata: Some(json!({
+                            "escalation_provider": "openai",
+                            "direction": "response",
+                            "request_artifact_id": artifact_id,
+                            "actions_executed_by_local_operator": [],
+                            "recommended_actions_are_advisory_only": true,
+                        })),
+                        content_text: Some(output.output_text.clone()),
+                        content_json: Some(json!({
+                            "raw_response": output.raw_response,
+                            "parsed_response": output.parsed_response,
+                            "request_artifact_id": artifact_id,
+                            "actions_executed_by_local_operator": [],
+                            "recommended_actions_are_advisory_only": true,
+                        })),
+                    });
+                    output_artifact_ids.push(id);
+                    response_artifact_id = Some(id);
+                }
+                Err(err) => {
+                    let id = Uuid::new_v4();
+                    run.artifacts.push(TaskArtifact {
+                        id,
+                        profile_id: run.profile_id,
+                        run_id: run.id,
+                        work_item_id: Some(save_step_id),
+                        name: "ChatGPT escalation response error".to_string(),
+                        artifact_type: "chatgpt_escalation_response".to_string(),
+                        location: None,
+                        created_at: Utc::now(),
+                        metadata: Some(json!({
+                            "escalation_provider": "openai",
+                            "direction": "response",
+                            "request_artifact_id": artifact_id,
+                            "success": false,
+                            "actions_executed_by_local_operator": [],
+                        })),
+                        content_text: Some(format!("OpenAI escalation failed: {}", err)),
+                        content_json: Some(json!({
+                            "error": err.to_string(),
+                            "request_artifact_id": artifact_id,
+                            "actions_executed_by_local_operator": [],
+                            "recommended_actions_are_advisory_only": true,
+                        })),
+                    });
+                    output_artifact_ids.push(id);
+                    response_artifact_id = Some(id);
+                }
+            }
+        }
+
+        finish_step(
+            &mut run,
+            save_step_id,
+            Some(if mode == "openai" {
+                "Saved ChatGPT escalation request and OpenAI response artifacts.".to_string()
+            } else {
+                "Saved manual ChatGPT escalation request artifact.".to_string()
+            }),
+            output_artifact_ids,
+        );
+
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some(if let Some(response_artifact_id) = response_artifact_id {
+            format!(
+                "OpenAI ChatGPT escalation completed. Request artifact {} and response artifact {} were saved. No recommended actions were executed automatically.",
+                artifact_id, response_artifact_id
+            )
+        } else {
+            format!(
+                "Manual ChatGPT escalation request prepared. Paste artifact {} into ChatGPT, then save the response back to the request artifact.",
+                artifact_id
+            )
+        });
+
         Ok(run)
     }
 
@@ -1028,6 +1295,50 @@ struct ArtifactSummaryInput {
     content_json: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatGptEscalationInput {
+    #[serde(default)]
+    user_request: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
+    desired_output: Option<String>,
+    #[serde(default)]
+    context_query: Option<String>,
+    #[serde(default)]
+    context_limit: Option<usize>,
+    #[serde(default)]
+    context_text: Option<String>,
+    #[serde(default)]
+    context_json: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct RedactionReport {
+    redacted_keys: usize,
+    redacted_text_values: usize,
+    redacted_patterns: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum EscalationPrivacyClass {
+    TechnicalOnly,
+    Personal,
+    Employment,
+    Secret,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct EscalationPolicyDecision {
+    allowed: bool,
+    requires_confirmation: bool,
+    privacy_classification: EscalationPrivacyClass,
+    reason: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct SeedReadablePage {
     #[serde(default)]
@@ -1319,6 +1630,273 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
         format!("{}...", truncated)
     } else {
         truncated
+    }
+}
+
+fn render_chatgpt_escalation_prompt(
+    user_request: &str,
+    desired_output: Option<&str>,
+    redacted_context: &Value,
+    redaction_report: &RedactionReport,
+) -> String {
+    let context = serde_json::to_string_pretty(redacted_context)
+        .unwrap_or_else(|_| "<unserializable context>".to_string());
+    format!(
+        "You are assisting Local Operator with a manual escalation.\n\nUser request:\n{}\n\nDesired output:\n{}\n\nRedaction summary:\n- redacted_keys: {}\n- redacted_text_values: {}\n\nRedacted context JSON:\n{}\n\nPlease answer with structured, actionable output. Preserve relevant IDs, URLs, task names, artifact types, and recommended next steps.",
+        user_request,
+        desired_output.unwrap_or("Return a concise answer with findings and next steps."),
+        redaction_report.redacted_keys,
+        redaction_report.redacted_text_values,
+        context
+    )
+}
+
+fn classify_escalation_privacy(
+    context: &Value,
+    redaction_report: &RedactionReport,
+) -> EscalationPrivacyClass {
+    if redaction_report.redacted_keys > 0 || redaction_report.redacted_text_values > 0 {
+        return EscalationPrivacyClass::Secret;
+    }
+
+    let text = context_search_text(context).to_lowercase();
+    if contains_any(
+        &text,
+        &[
+            "resume",
+            "employment",
+            "job",
+            "opportunity",
+            "salary",
+            "cover letter",
+            "interview",
+            "candidate",
+            "employer",
+            "company",
+            "career",
+            "salesforce architect",
+        ],
+    ) {
+        return EscalationPrivacyClass::Employment;
+    }
+
+    if contains_any(
+        &text,
+        &[
+            "email",
+            "phone",
+            "address",
+            "medical",
+            "health",
+            "family",
+            "personal",
+            "profile",
+            "ssn",
+            "social security",
+        ],
+    ) || looks_like_email_or_phone(&text)
+    {
+        return EscalationPrivacyClass::Personal;
+    }
+
+    EscalationPrivacyClass::TechnicalOnly
+}
+
+fn decide_escalation_policy(
+    classification: EscalationPrivacyClass,
+    confirm: bool,
+    redaction_report: &RedactionReport,
+) -> EscalationPolicyDecision {
+    match classification {
+        EscalationPrivacyClass::TechnicalOnly => EscalationPolicyDecision {
+            allowed: true,
+            requires_confirmation: false,
+            privacy_classification: classification,
+            reason: "Technical-only escalation is allowed without confirmation.".to_string(),
+        },
+        EscalationPrivacyClass::Personal | EscalationPrivacyClass::Employment if confirm => {
+            EscalationPolicyDecision {
+                allowed: true,
+                requires_confirmation: true,
+                privacy_classification: classification,
+                reason: "Confirmed personal or employment escalation.".to_string(),
+            }
+        }
+        EscalationPrivacyClass::Personal | EscalationPrivacyClass::Employment => {
+            EscalationPolicyDecision {
+                allowed: false,
+                requires_confirmation: true,
+                privacy_classification: classification,
+                reason: format!(
+                    "{:?} escalation requires explicit confirmation",
+                    classification
+                ),
+            }
+        }
+        EscalationPrivacyClass::Secret => EscalationPolicyDecision {
+            allowed: false,
+            requires_confirmation: false,
+            privacy_classification: classification,
+            reason: format!(
+                "Escalation blocked because secrets were detected and redacted ({} keys, {} text values).",
+                redaction_report.redacted_keys, redaction_report.redacted_text_values
+            ),
+        },
+    }
+}
+
+fn context_search_text(value: &Value) -> String {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .flat_map(|(key, value)| [key.clone(), context_search_text(value)])
+            .collect::<Vec<_>>()
+            .join(" "),
+        Value::Array(items) => items
+            .iter()
+            .map(context_search_text)
+            .collect::<Vec<_>>()
+            .join(" "),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn looks_like_email_or_phone(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        let trimmed = word.trim_matches(|ch: char| {
+            matches!(ch, ',' | '.' | ';' | ':' | '"' | '\'' | ')' | ']' | '}')
+        });
+        let digit_count = trimmed.chars().filter(|ch| ch.is_ascii_digit()).count();
+        (trimmed.contains('@') && trimmed.contains('.')) || digit_count >= 10
+    })
+}
+
+fn redact_json_value(value: &Value, report: &mut RedactionReport) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut redacted = serde_json::Map::new();
+            for (key, value) in map {
+                if is_sensitive_key(key) {
+                    report.redacted_keys += 1;
+                    push_redaction_pattern(report, "sensitive_key");
+                    redacted.insert(key.clone(), Value::String("[REDACTED]".to_string()));
+                } else {
+                    redacted.insert(key.clone(), redact_json_value(value, report));
+                }
+            }
+            Value::Object(redacted)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| redact_json_value(item, report))
+                .collect(),
+        ),
+        Value::String(text) => {
+            let redacted = redact_text(text, report);
+            Value::String(redacted)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth",
+        "bearer",
+        "cookie",
+        "session",
+        "credential",
+        "private_key",
+    ]
+    .iter()
+    .any(|marker| key.contains(marker))
+}
+
+fn redact_text(text: &str, report: &mut RedactionReport) -> String {
+    let mut changed = false;
+    let redacted_words = text
+        .split_whitespace()
+        .map(|word| {
+            let trimmed = word.trim_matches(|ch: char| {
+                matches!(ch, ',' | '.' | ';' | ':' | '"' | '\'' | ')' | ']' | '}')
+            });
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("bearer ")
+                || lower.starts_with("sk-")
+                || lower.starts_with("ghp_")
+                || lower.starts_with("xoxb-")
+                || looks_like_long_secret(trimmed)
+            {
+                changed = true;
+                "[REDACTED]".to_string()
+            } else {
+                word.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut redacted = redacted_words.join(" ");
+    for marker in ["password=", "token=", "api_key=", "secret="] {
+        if redacted.to_lowercase().contains(marker) {
+            redacted = redact_assignments(&redacted, marker);
+            changed = true;
+        }
+    }
+
+    if changed {
+        report.redacted_text_values += 1;
+        push_redaction_pattern(report, "sensitive_text");
+    }
+
+    redacted
+}
+
+fn looks_like_long_secret(value: &str) -> bool {
+    if value.len() == 36 && value.chars().filter(|ch| *ch == '-').count() == 4 {
+        return false;
+    }
+
+    value.len() >= 32
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn redact_assignments(value: &str, marker: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            if word.to_lowercase().starts_with(marker) {
+                format!("{}[REDACTED]", &word[..marker.len().min(word.len())])
+            } else {
+                word.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn push_redaction_pattern(report: &mut RedactionReport, pattern: &str) {
+    if !report
+        .redacted_patterns
+        .iter()
+        .any(|existing| existing == pattern)
+    {
+        report.redacted_patterns.push(pattern.to_string());
     }
 }
 

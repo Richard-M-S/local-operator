@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub homeassistant: HomeAssistantConfig,
     pub policy: PolicyConfig,
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub openai_escalation: OpenAiEscalationConfig,
     pub llm_router: LlmRouterConfig,
     #[serde(default)]
     pub search: SearchConfig,
@@ -82,6 +84,27 @@ pub struct LlmConfig {
     #[allow(dead_code)]
     pub model: String,
     pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiEscalationConfig {
+    pub enabled: bool,
+    pub api_key_env: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout_seconds: u64,
+}
+
+impl Default for OpenAiEscalationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            timeout_seconds: 120,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

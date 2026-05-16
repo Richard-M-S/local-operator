@@ -20,6 +20,8 @@ pub struct CreateTaskRequest {
     pub message: String,
     pub profile_id: Option<Uuid>,
     pub source: Option<String>,
+    #[serde(default)]
+    pub confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +57,12 @@ pub async fn create(
     let source = req.source.as_deref().unwrap_or("api");
     let response = state
         .operator
-        .create_task_from_message(&req.message, profile_id, source)
+        .create_task_from_message(
+            &req.message,
+            profile_id,
+            source,
+            req.confirm.unwrap_or(false),
+        )
         .await?;
 
     Ok(Json(response))

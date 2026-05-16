@@ -61,7 +61,7 @@ pub async fn openapi_json() -> Json<Value> {
                 "post": {
                     "operationId": "createTaskFromNaturalLanguage",
                     "summary": "Create a durable task from natural language",
-                    "description": "Use createTaskFromNaturalLanguage when the user asks Local Operator to do something that may require tools, web access, durable tracking, artifacts, retries, auditability, or multiple steps. This is the preferred first tool for requests like searching the web, reading URLs, finding jobs, creating opportunities, checking system status, or starting any task where the client does not know the internal task type. After this succeeds, call runTaskRequest with the returned task_request.id.",
+                    "description": "Use createTaskFromNaturalLanguage when the user asks Local Operator to do something that may require tools, web access, durable tracking, artifacts, retries, auditability, or multiple steps. This is the preferred first tool for requests like searching the web, reading URLs, finding jobs, creating opportunities, checking system status, preparing a manual ChatGPT escalation request, or starting any task where the client does not know the internal task type. After this succeeds, call runTaskRequest with the returned task_request.id.",
                     "security": [{ "BearerAuth": [] }],
                     "requestBody": {
                         "required": true,
@@ -89,6 +89,22 @@ pub async fn openapi_json() -> Json<Value> {
                                         "summary": "Create a system status task",
                                         "value": {
                                             "message": "Generate a system status report.",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "source": "open_webui"
+                                        }
+                                    },
+                                    "manualChatGptEscalation": {
+                                        "summary": "Create a manual ChatGPT escalation request task",
+                                        "value": {
+                                            "message": "Escalate this task to ChatGPT in manual mode and prepare a redacted request I can paste.",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "source": "open_webui"
+                                        }
+                                    },
+                                    "openAiChatGptEscalation": {
+                                        "summary": "Create an OpenAI API escalation task",
+                                        "value": {
+                                            "message": "Escalate this technical task using the OpenAI API and save the structured response.",
                                             "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
                                             "source": "open_webui"
                                         }
@@ -254,6 +270,15 @@ pub async fn openapi_json() -> Json<Value> {
                                             "message": "Summarize this artifact and recommend the next action.",
                                             "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID
                                         }
+                                    },
+                                    "approveEscalationFollowUps": {
+                                        "summary": "Create follow-up tasks from a ChatGPT escalation response",
+                                        "value": {
+                                            "message": "Create follow-up tasks from the recommended next steps.",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "confirm": true,
+                                            "create_tasks": true
+                                        }
                                     }
                                 }
                             }
@@ -301,6 +326,103 @@ pub async fn openapi_json() -> Json<Value> {
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/artifacts/chatgpt-escalation-requests": {
+                "post": {
+                    "operationId": "createChatGptEscalationRequestArtifact",
+                    "summary": "Create a ChatGPT escalation request artifact",
+                    "description": "Creates a chatgpt_escalation_request artifact using existing TaskArtifact storage. Use this when Local Operator needs to capture a structured request for ChatGPT escalation. The artifact must belong to an existing OpTaskRun and must include structured JSON content.",
+                    "security": [{ "BearerAuth": [] }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CreateChatGptEscalationRequestArtifact" },
+                                "examples": {
+                                    "patchReviewRequest": {
+                                        "summary": "Escalate a patch review question",
+                                        "value": {
+                                            "run_id": "00000000-0000-0000-0000-000000000000",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "name": "ChatGPT escalation request",
+                                            "metadata": {
+                                                "purpose": "review",
+                                                "priority": "normal"
+                                            },
+                                            "content_text": "Please review this proposed task workflow.",
+                                            "content_json": {
+                                                "question": "Review the plan and identify risks.",
+                                                "context_artifact_ids": [],
+                                                "desired_output": "Concise review with risks and suggested changes."
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Created ChatGPT escalation request artifact",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/ChatGptEscalationArtifactResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/artifacts/{artifact_id}/chatgpt-escalation-response": {
+                "post": {
+                    "operationId": "saveChatGptEscalationResponseArtifact",
+                    "summary": "Save a ChatGPT escalation response artifact",
+                    "description": "Creates a chatgpt_escalation_response artifact using existing TaskArtifact storage and links it back to the chatgpt_escalation_request artifact identified by artifact_id. The response must include structured JSON content.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        { "$ref": "#/components/parameters/ArtifactId" }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/SaveChatGptEscalationResponseArtifact" },
+                                "examples": {
+                                    "reviewResponse": {
+                                        "summary": "Save ChatGPT review output",
+                                        "value": {
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "name": "ChatGPT escalation response",
+                                            "metadata": {
+                                                "model": "chatgpt",
+                                                "purpose": "review"
+                                            },
+                                            "response_text": "The plan is sound; main risks are missing retry policy and unclear ownership.",
+                                            "content_json": {
+                                                "summary": "The plan is sound with two risks.",
+                                                "findings": [
+                                                    "Add retry policy.",
+                                                    "Clarify ownership."
+                                                ],
+                                                "recommended_next_steps": []
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Saved ChatGPT escalation response artifact",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/ChatGptEscalationArtifactResponse" }
                                 }
                             }
                         }
@@ -621,6 +743,11 @@ pub async fn openapi_json() -> Json<Value> {
                             "type": "string",
                             "default": "api",
                             "example": "open_webui"
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Set true to confirm personal or employment ChatGPT escalation. Technical-only escalation does not require confirmation; secrets are always blocked. OpenAI API mode still sends only redacted request content."
                         }
                     }
                 },
@@ -744,6 +871,31 @@ pub async fn openapi_json() -> Json<Value> {
                         "source": {
                             "type": "string",
                             "default": "artifact_continue"
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Set true to approve creating follow-up OpTasks from a chatgpt_escalation_response artifact. Recommended actions are extracted without creating tasks when false."
+                        },
+                        "create_tasks": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Set true when the user approves creating new OpTasks from escalation recommendations. Created tasks are linked to the response artifact and are not executed automatically."
+                        }
+                    }
+                },
+                "RecommendedEscalationAction": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "detail": { "type": "string", "nullable": true },
+                        "suggested_task_type": {
+                            "type": "string",
+                            "description": "Best-effort Local Operator task type inferred from the recommendation."
+                        },
+                        "input_json": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 },
@@ -770,6 +922,20 @@ pub async fn openapi_json() -> Json<Value> {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/TaskRunArtifactSummary" }
                         },
+                        "recommended_actions": {
+                            "type": "array",
+                            "description": "Present when continuing from a chatgpt_escalation_response artifact. These are extracted candidate follow-up tasks.",
+                            "items": { "$ref": "#/components/schemas/RecommendedEscalationAction" }
+                        },
+                        "created_tasks": {
+                            "type": "array",
+                            "description": "Follow-up OpTasks created after explicit approval. These are linked back to the escalation response artifact and are not executed automatically.",
+                            "items": { "$ref": "#/components/schemas/OpTask" }
+                        },
+                        "requires_confirmation": {
+                            "type": "boolean",
+                            "description": "True when recommended actions were found but follow-up task creation has not been approved."
+                        },
                         "next_actions": {
                             "type": "array",
                             "items": { "type": "string" }
@@ -777,6 +943,104 @@ pub async fn openapi_json() -> Json<Value> {
                         "next_suggested_action": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    }
+                },
+                "CreateChatGptEscalationRequestArtifact": {
+                    "type": "object",
+                    "required": ["run_id", "content_json"],
+                    "properties": {
+                        "run_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Existing OpTaskRun that owns the request artifact."
+                        },
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Optional profile guard. If supplied, it must match the run profile.",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Required when the escalation request contains personal or employment context. Technical-only requests do not require confirmation; secrets are always blocked."
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "nullable": true
+                        },
+                        "name": {
+                            "type": "string",
+                            "default": "ChatGPT escalation request"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "nullable": true
+                        },
+                        "content_text": {
+                            "type": "string",
+                            "nullable": true
+                        },
+                        "content_json": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "Structured JSON payload for ChatGPT escalation. Must be an object or array."
+                        }
+                    }
+                },
+                "SaveChatGptEscalationResponseArtifact": {
+                    "type": "object",
+                    "description": "Paste back a manual ChatGPT response. Provide content_json for structured output, or response_text for plain pasted text; plain text is wrapped into structured JSON automatically.",
+                    "properties": {
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Optional profile guard. If supplied, it must match the request artifact profile.",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "work_item_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "nullable": true
+                        },
+                        "name": {
+                            "type": "string",
+                            "default": "ChatGPT escalation response"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "nullable": true
+                        },
+                        "content_text": {
+                            "type": "string",
+                            "nullable": true
+                        },
+                        "response_text": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Plain pasted ChatGPT response. Use this for manual mode if no structured JSON was produced."
+                        },
+                        "content_json": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "nullable": true,
+                            "description": "Structured JSON response from ChatGPT. Must be an object or array when supplied."
+                        }
+                    }
+                },
+                "ChatGptEscalationArtifactResponse": {
+                    "type": "object",
+                    "properties": {
+                        "artifact": { "$ref": "#/components/schemas/TaskArtifact" },
+                        "linked_request_artifact_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "nullable": true,
+                            "description": "Present for response artifacts and points back to the chatgpt_escalation_request artifact."
                         }
                     }
                 },
@@ -791,14 +1055,16 @@ pub async fn openapi_json() -> Json<Value> {
                                 "employment.search_opportunities",
                                 "reader.search_web",
                                 "reader.read_url",
-                                "system.status_report"
+                                "system.status_report",
+                                "system.escalate_to_chatgpt",
+                                "artifact.summarize"
                             ]
                         },
                         "description": { "type": "string", "nullable": true },
                         "input_json": {
                             "type": "object",
                             "additionalProperties": true,
-                            "description": "For employment.search_opportunities: { limit?: number, create_opportunities?: boolean }."
+                            "description": "For employment.search_opportunities: { limit?: number, create_opportunities?: boolean }. For system.escalate_to_chatgpt: { mode: 'manual' | 'openai', confirm?: boolean, user_request: string, desired_output?: string, context_text?: string, context_json?: object }."
                         },
                         "enabled": { "type": "boolean", "default": true }
                     }

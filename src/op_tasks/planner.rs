@@ -22,6 +22,7 @@ impl TaskPlanner {
             "reader.search_web" => self.plan_reader_search_web(task, run_id),
             "employment.search_opportunities" => self.plan_employment_search(task, run_id),
             "artifact.summarize" => self.plan_artifact_summary(task, run_id),
+            "system.escalate_to_chatgpt" => self.plan_chatgpt_escalation(task, run_id),
             _ => vec![OpWorkItem::planned(
                 run_id,
                 "unsupported_task",
@@ -102,6 +103,43 @@ impl TaskPlanner {
         summarize.tool_args_json = Some(task.input_json.clone());
 
         vec![summarize]
+    }
+
+    fn plan_chatgpt_escalation(&self, task: &OpTask, run_id: Uuid) -> Vec<OpWorkItem> {
+        let mut collect = OpWorkItem::planned(
+            run_id,
+            "collect_escalation_context",
+            "Collect local task, user request, profile context, and supplied context for manual ChatGPT escalation.",
+            "context",
+            1,
+        );
+        collect.tool_args_json = Some(task.input_json.clone());
+
+        let redact = OpWorkItem::planned(
+            run_id,
+            "redact_escalation_context",
+            "Redact sensitive values before preparing the escalation artifact.",
+            "policy",
+            2,
+        );
+
+        let mut save = OpWorkItem::planned(
+            run_id,
+            "save_escalation_request",
+            "Save a chatgpt_escalation_request artifact for manual copy/paste escalation.",
+            "artifact",
+            3,
+        );
+        save.tool_args_json = Some(json!({
+            "artifact_type": "chatgpt_escalation_request",
+            "mode": task
+                .input_json
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .unwrap_or("manual")
+        }));
+
+        vec![collect, redact, save]
     }
 
     fn plan_employment_search(&self, task: &OpTask, run_id: Uuid) -> Vec<OpWorkItem> {

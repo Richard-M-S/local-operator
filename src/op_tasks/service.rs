@@ -67,6 +67,15 @@ impl OpTaskService {
             .ok_or_else(|| AppError::NotFound("Op Task artifact not found".to_string()))
     }
 
+    pub async fn save_artifact(&self, artifact: TaskArtifact) -> Result<TaskArtifact, AppError> {
+        self.repo
+            .save_artifact(artifact.clone())
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(artifact)
+    }
+
     pub async fn list_artifacts(
         &self,
         search: ArtifactSearch,

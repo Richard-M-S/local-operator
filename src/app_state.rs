@@ -1,4 +1,4 @@
-use crate::adapters::llm::LlmClient;
+use crate::adapters::{llm::LlmClient, openai_escalation::OpenAiEscalationClient};
 use crate::config::AppConfig;
 use crate::context::{ContextRepository, ContextService};
 use crate::domains::employment::{
@@ -60,6 +60,13 @@ impl AppState {
         let tool_execution =
             ToolExecutionService::new(tools.clone(), policy.clone(), audit.clone());
         let model_execution = ModelExecutionService::new(llm.clone(), audit.clone());
+        let openai_escalation = if config.openai_escalation.enabled {
+            Some(OpenAiEscalationClient::new(
+                config.openai_escalation.clone(),
+            )?)
+        } else {
+            None
+        };
 
         let readers = ReaderService::new(config.search.clone());
 
@@ -76,6 +83,7 @@ impl AppState {
             llm_router.clone(),
             employment_repo.clone(),
             context.clone(),
+            openai_escalation,
         );
         let task_planner = TaskPlanner::new(llm_router.clone());
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner, task_planner);

@@ -106,6 +106,7 @@ impl OperatorService {
         message: &str,
         profile_id: Uuid,
         source: &str,
+        confirm: bool,
     ) -> Result<CreateTaskFromMessageResponse, AppError> {
         let message = message.trim();
         if message.is_empty() {
@@ -115,7 +116,7 @@ impl OperatorService {
         let source = source.trim();
         let source = if source.is_empty() { "api" } else { source };
         let classified = self
-            .classify_task_request(message, profile_id, source)
+            .classify_task_request(message, profile_id, source, confirm)
             .await?;
 
         let task = self
@@ -164,7 +165,32 @@ impl OperatorService {
         message: &str,
         _profile_id: Uuid,
         source: &str,
+        confirm: bool,
     ) -> Result<ClassifiedTaskRequest, AppError> {
+        let normalized = message.to_lowercase();
+        if is_chatgpt_escalation_request(&normalized) {
+            let escalation_mode = if normalized.contains("openai") || normalized.contains("api") {
+                "openai"
+            } else {
+                "manual"
+            };
+            return Ok(ClassifiedTaskRequest {
+                intent: "system.escalate_to_chatgpt".to_string(),
+                task_type: "system.escalate_to_chatgpt".to_string(),
+                name: "Manual ChatGPT Escalation".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "user_request": message,
+                    "mode": escalation_mode,
+                    "confirm": confirm,
+                    "desired_output": "Return structured findings, recommendations, and next steps.",
+                    "priority": "normal",
+                    "model_purpose": "manual_escalation",
+                    "source": source
+                }),
+            });
+        }
+
         if let Some(url) = extract_read_url(message) {
             return Ok(ClassifiedTaskRequest {
                 intent: "reader.read_url".to_string(),
@@ -198,7 +224,6 @@ impl OperatorService {
             });
         }
 
-        let normalized = message.to_lowercase();
         if is_system_status_request(&normalized) {
             return Ok(ClassifiedTaskRequest {
                 intent: "system.status_report".to_string(),
@@ -1030,6 +1055,14 @@ fn is_system_status_request(normalized: &str) -> bool {
     ) || normalized.contains("system status")
         || normalized.contains("status report")
         || normalized.contains("health check")
+}
+
+fn is_chatgpt_escalation_request(normalized: &str) -> bool {
+    (normalized.contains("chatgpt") || normalized.contains("chat gpt"))
+        && (normalized.contains("escalat")
+            || normalized.contains("ask")
+            || normalized.contains("send")
+            || normalized.contains("manual"))
 }
 
 fn employment_search_chat_message(

@@ -65,6 +65,10 @@ pub struct ContinueArtifactRequest {
     pub profile_id: Option<Uuid>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub confirm: bool,
+    #[serde(default)]
+    pub create_tasks: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,8 +79,19 @@ pub struct ContinueArtifactResponse {
     pub task: OpTask,
     pub run: OpTaskRunSummary,
     pub artifacts: Vec<TaskRunArtifactSummary>,
+    pub recommended_actions: Vec<RecommendedEscalationAction>,
+    pub created_tasks: Vec<OpTask>,
+    pub requires_confirmation: bool,
     pub next_actions: Vec<String>,
     pub next_suggested_action: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RecommendedEscalationAction {
+    pub title: String,
+    pub detail: Option<String>,
+    pub suggested_task_type: String,
+    pub input_json: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,6 +106,62 @@ pub struct TaskRunArtifactSummary {
     pub id: Uuid,
     pub artifact_type: String,
     pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateChatGptEscalationRequest {
+    pub run_id: Uuid,
+    pub profile_id: Option<Uuid>,
+    #[serde(default)]
+    pub confirm: bool,
+    #[serde(default)]
+    pub work_item_id: Option<Uuid>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub content_text: Option<String>,
+    pub content_json: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveChatGptEscalationResponse {
+    pub profile_id: Option<Uuid>,
+    #[serde(default)]
+    pub work_item_id: Option<Uuid>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub content_text: Option<String>,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    #[serde(default)]
+    pub content_json: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatGptEscalationArtifactResponse {
+    pub artifact: TaskArtifact,
+    pub linked_request_artifact_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum EscalationArtifactPrivacyClass {
+    TechnicalOnly,
+    Personal,
+    Employment,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct EscalationArtifactPolicyDecision {
+    allowed: bool,
+    requires_confirmation: bool,
+    privacy_classification: EscalationArtifactPrivacyClass,
+    reason: String,
 }
 
 pub async fn latest(
@@ -224,6 +295,14 @@ pub async fn continue_from_artifact(
         )));
     }
 
+    let is_escalation_response = artifact.artifact_type == "chatgpt_escalation_response";
+    let recommended_actions = if is_escalation_response {
+        extract_escalation_recommended_actions(&artifact, source)
+    } else {
+        vec![]
+    };
+    let follow_up_creation_approved = req.confirm || req.create_tasks;
+
     let continuation = build_artifact_continuation(&artifact, message, source)?;
     let task = state
         .op_tasks
@@ -310,6 +389,13 @@ pub async fn continue_from_artifact(
         .await?;
     }
 
+    let created_tasks = if is_escalation_response && follow_up_creation_approved {
+        create_escalation_follow_up_tasks(&state, profile_id, &artifact, &recommended_actions)
+            .await?
+    } else {
+        vec![]
+    };
+
     let artifacts = run
         .artifacts
         .iter()
@@ -340,6 +426,26 @@ pub async fn continue_from_artifact(
         status: run.status,
         summary: run.summary.clone(),
     };
+    let requires_confirmation =
+        is_escalation_response && !recommended_actions.is_empty() && !follow_up_creation_approved;
+    let next_actions = if is_escalation_response && requires_confirmation {
+        vec![
+            "approve_follow_up_tasks".to_string(),
+            "show_latest_artifacts".to_string(),
+            "continue_from_artifact".to_string(),
+        ]
+    } else if is_escalation_response && !created_tasks.is_empty() {
+        vec![
+            "run_task".to_string(),
+            "show_latest_artifacts".to_string(),
+            "continue_from_artifact".to_string(),
+        ]
+    } else {
+        vec![
+            "show_latest_artifacts".to_string(),
+            "continue_from_artifact".to_string(),
+        ]
+    };
 
     Ok(Json(ContinueArtifactResponse {
         ok: matches!(run.status, OpTaskRunStatus::Succeeded),
@@ -348,11 +454,137 @@ pub async fn continue_from_artifact(
         task,
         run: run_summary,
         artifacts,
-        next_actions: vec![
-            "show_latest_artifacts".to_string(),
-            "continue_from_artifact".to_string(),
-        ],
+        recommended_actions,
+        created_tasks,
+        requires_confirmation,
+        next_actions,
         next_suggested_action,
+    }))
+}
+
+pub async fn create_chatgpt_escalation_request(
+    State(state): State<AppState>,
+    Json(req): Json<CreateChatGptEscalationRequest>,
+) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
+    ensure_structured_json(&req.content_json, "content_json")?;
+    let policy_decision = classify_escalation_artifact_policy(
+        req.content_text.as_deref(),
+        &req.content_json,
+        req.confirm,
+    )?;
+    let run = state.op_tasks.get_run(req.run_id).await?;
+    if req
+        .profile_id
+        .is_some_and(|profile_id| profile_id != run.profile_id)
+    {
+        return Err(AppError::NotFound(format!(
+            "Op Task run {} not found",
+            req.run_id
+        )));
+    }
+
+    let artifact = TaskArtifact {
+        id: Uuid::new_v4(),
+        profile_id: run.profile_id,
+        run_id: run.id,
+        work_item_id: req.work_item_id,
+        name: clean_optional(req.name.as_deref())
+            .unwrap_or_else(|| "ChatGPT escalation request".to_string()),
+        artifact_type: "chatgpt_escalation_request".to_string(),
+        location: None,
+        created_at: Utc::now(),
+        metadata: Some(merge_metadata(
+            req.metadata,
+            json!({
+                "escalation_provider": "chatgpt",
+                "direction": "request",
+                "run_id": run.id,
+                "task_id": run.task_id,
+                "privacy_classification": policy_decision.privacy_classification,
+                "policy_decision": policy_decision,
+            }),
+        )),
+        content_text: req.content_text,
+        content_json: Some(req.content_json),
+    };
+
+    let artifact = state.op_tasks.save_artifact(artifact).await?;
+    Ok(Json(ChatGptEscalationArtifactResponse {
+        artifact,
+        linked_request_artifact_id: None,
+    }))
+}
+
+pub async fn save_chatgpt_escalation_response(
+    State(state): State<AppState>,
+    Path(request_artifact_id): Path<Uuid>,
+    Json(req): Json<SaveChatGptEscalationResponse>,
+) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
+    let response_text = clean_optional(req.response_text.as_deref());
+    if req.content_json.is_none() && response_text.is_none() {
+        return Err(AppError::BadRequest(
+            "either content_json or response_text is required".to_string(),
+        ));
+    }
+    let content_text = clean_optional(req.content_text.as_deref()).or(response_text.clone());
+    let content_json = req.content_json.unwrap_or_else(|| {
+        json!({
+            "response_text": response_text,
+        })
+    });
+    ensure_structured_json(&content_json, "content_json")?;
+    ensure_no_secret_content(content_text.as_deref(), &content_json)?;
+    let request_artifact = state.op_tasks.get_artifact(request_artifact_id).await?;
+    if request_artifact.artifact_type != "chatgpt_escalation_request" {
+        return Err(AppError::BadRequest(
+            "request_artifact_id must reference a chatgpt_escalation_request artifact".to_string(),
+        ));
+    }
+    if req
+        .profile_id
+        .is_some_and(|profile_id| profile_id != request_artifact.profile_id)
+    {
+        return Err(AppError::NotFound(format!(
+            "artifact {} not found",
+            request_artifact_id
+        )));
+    }
+
+    let artifact = TaskArtifact {
+        id: Uuid::new_v4(),
+        profile_id: request_artifact.profile_id,
+        run_id: request_artifact.run_id,
+        work_item_id: req.work_item_id.or(request_artifact.work_item_id),
+        name: clean_optional(req.name.as_deref())
+            .unwrap_or_else(|| "ChatGPT escalation response".to_string()),
+        artifact_type: "chatgpt_escalation_response".to_string(),
+        location: None,
+        created_at: Utc::now(),
+        metadata: Some(merge_metadata(
+            req.metadata,
+            json!({
+                "escalation_provider": "chatgpt",
+                "direction": "response",
+                "request_artifact_id": request_artifact.id,
+                "run_id": request_artifact.run_id,
+            }),
+        )),
+        content_text,
+        content_json: Some(content_json),
+    };
+
+    let artifact = state.op_tasks.save_artifact(artifact).await?;
+    create_artifact_link(
+        &state,
+        artifact.id,
+        request_artifact.id,
+        "responds_to_escalation_request",
+    )
+    .await?;
+
+    Ok(Json(ChatGptEscalationArtifactResponse {
+        artifact,
+        linked_request_artifact_id: Some(request_artifact.id),
     }))
 }
 
@@ -611,6 +843,279 @@ fn generic_artifact_summary_plan(
     }
 }
 
+fn extract_escalation_recommended_actions(
+    artifact: &TaskArtifact,
+    source: &str,
+) -> Vec<RecommendedEscalationAction> {
+    let mut values = Vec::new();
+    if let Some(content_json) = &artifact.content_json {
+        collect_recommended_action_values(content_json, &mut values);
+        if let Some(parsed_response) = content_json.get("parsed_response") {
+            collect_recommended_action_values(parsed_response, &mut values);
+        }
+        if let Some(raw_response) = content_json.get("raw_response") {
+            collect_recommended_action_values(raw_response, &mut values);
+        }
+    }
+    if values.is_empty() {
+        if let Some(content_text) = &artifact.content_text {
+            values.extend(
+                extract_text_recommendations(content_text)
+                    .into_iter()
+                    .map(Value::String),
+            );
+        }
+    }
+
+    let mut actions = Vec::new();
+    for value in values {
+        if let Some(action) = recommended_action_from_value(&value, artifact, source) {
+            if !actions
+                .iter()
+                .any(|existing: &RecommendedEscalationAction| {
+                    existing.title.eq_ignore_ascii_case(&action.title)
+                })
+            {
+                actions.push(action);
+            }
+        }
+    }
+
+    actions
+}
+
+fn collect_recommended_action_values(value: &Value, values: &mut Vec<Value>) {
+    for key in [
+        "recommended_next_steps",
+        "recommended_actions",
+        "next_steps",
+        "actions",
+        "follow_up_tasks",
+        "tasks",
+        "recommendations",
+    ] {
+        if let Some(array) = value.get(key).and_then(|value| value.as_array()) {
+            values.extend(array.iter().cloned());
+        }
+    }
+}
+
+fn extract_text_recommendations(content_text: &str) -> Vec<String> {
+    content_text
+        .lines()
+        .filter_map(|line| {
+            let cleaned = line
+                .trim()
+                .trim_start_matches(|ch: char| {
+                    ch.is_ascii_digit() || matches!(ch, '.' | ')' | '-' | '*' | '[' | ']' | ' ')
+                })
+                .trim();
+            if cleaned.len() >= 12
+                && contains_any(
+                    &cleaned.to_lowercase(),
+                    &[
+                        "create",
+                        "add",
+                        "run",
+                        "search",
+                        "read",
+                        "score",
+                        "summarize",
+                        "review",
+                        "follow up",
+                    ],
+                )
+            {
+                Some(cleaned.to_string())
+            } else {
+                None
+            }
+        })
+        .take(10)
+        .collect()
+}
+
+fn recommended_action_from_value(
+    value: &Value,
+    artifact: &TaskArtifact,
+    source: &str,
+) -> Option<RecommendedEscalationAction> {
+    let title = match value {
+        Value::String(text) => clean_optional(Some(text)),
+        Value::Object(object) => ["title", "action", "task", "summary", "name"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(|value| value.as_str()))
+            .and_then(|value| clean_optional(Some(value))),
+        _ => None,
+    }?;
+    let detail = match value {
+        Value::Object(object) => ["detail", "description", "reason", "notes"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(|value| value.as_str()))
+            .and_then(|value| clean_optional(Some(value))),
+        _ => None,
+    };
+    let suggested_task_type = match value {
+        Value::Object(object) => object
+            .get("task_type")
+            .and_then(|value| value.as_str())
+            .filter(|task_type| is_supported_follow_up_task_type(task_type))
+            .map(str::to_string)
+            .unwrap_or_else(|| classify_recommended_task_type(&title, detail.as_deref())),
+        _ => classify_recommended_task_type(&title, detail.as_deref()),
+    };
+    let input_json = build_recommended_action_input(
+        &suggested_task_type,
+        &title,
+        detail.as_deref(),
+        artifact,
+        source,
+    );
+
+    Some(RecommendedEscalationAction {
+        title,
+        detail,
+        suggested_task_type,
+        input_json,
+    })
+}
+
+fn classify_recommended_task_type(title: &str, detail: Option<&str>) -> String {
+    let normalized = format!("{} {}", title, detail.unwrap_or_default()).to_lowercase();
+    if contains_any(
+        &normalized,
+        &[
+            "job",
+            "opportunit",
+            "employment",
+            "resume",
+            "cover letter",
+            "candidate",
+            "interview",
+            "score",
+        ],
+    ) {
+        "employment.search_opportunities".to_string()
+    } else if contains_any(
+        &normalized,
+        &["search", "find", "look up", "web", "internet"],
+    ) {
+        "reader.search_web".to_string()
+    } else if contains_any(&normalized, &["read url", "read page", "fetch url"]) {
+        "reader.read_url".to_string()
+    } else if contains_any(&normalized, &["status", "health check", "system report"]) {
+        "system.status_report".to_string()
+    } else {
+        "artifact.summarize".to_string()
+    }
+}
+
+fn is_supported_follow_up_task_type(task_type: &str) -> bool {
+    matches!(
+        task_type,
+        "artifact.summarize"
+            | "employment.search_opportunities"
+            | "reader.read_url"
+            | "reader.search_web"
+            | "system.status_report"
+    )
+}
+
+fn build_recommended_action_input(
+    task_type: &str,
+    title: &str,
+    detail: Option<&str>,
+    artifact: &TaskArtifact,
+    source: &str,
+) -> Value {
+    let user_request = detail
+        .map(|detail| format!("{}\n\n{}", title, detail))
+        .unwrap_or_else(|| title.to_string());
+    match task_type {
+        "reader.search_web" => json!({
+            "query": user_request,
+            "limit": 10,
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "escalation_follow_up",
+        }),
+        "reader.read_url" => json!({
+            "url": title,
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "escalation_follow_up",
+        }),
+        "employment.search_opportunities" => json!({
+            "user_request": user_request,
+            "limit": 10,
+            "create_opportunities": wants_create_opportunities(&user_request),
+            "min_score": requested_min_score(&user_request).unwrap_or(0),
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "escalation_follow_up",
+        }),
+        "system.status_report" => json!({
+            "user_request": user_request,
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "escalation_follow_up",
+        }),
+        _ => json!({
+            "user_request": user_request,
+            "artifact_name": artifact.name,
+            "artifact_type": artifact.artifact_type,
+            "source_artifact_id": artifact.id,
+            "content_text": artifact.content_text,
+            "content_json": artifact.content_json,
+            "source": source,
+            "model_purpose": "escalation_follow_up",
+        }),
+    }
+}
+
+async fn create_escalation_follow_up_tasks(
+    state: &AppState,
+    profile_id: Uuid,
+    artifact: &TaskArtifact,
+    actions: &[RecommendedEscalationAction],
+) -> Result<Vec<OpTask>, AppError> {
+    let mut tasks = Vec::new();
+    for action in actions {
+        let task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                action.suggested_task_type.clone(),
+                format!("Follow up: {}", action.title),
+                action.detail.clone().or_else(|| {
+                    Some(format!(
+                        "Created from ChatGPT escalation response artifact {}.",
+                        artifact.id
+                    ))
+                }),
+                action.input_json.clone(),
+                true,
+            )
+            .await?;
+        create_entity_link(
+            state,
+            "op_task",
+            task.id,
+            "task_artifact",
+            artifact.id,
+            "created_from_escalation_response",
+        )
+        .await?;
+        tasks.push(task);
+    }
+
+    Ok(tasks)
+}
+
 fn is_employment_continuation(message: &str) -> bool {
     let normalized = message.to_lowercase();
     normalized.contains("job")
@@ -669,6 +1174,164 @@ fn requested_min_score(message: &str) -> Option<i64> {
     None
 }
 
+fn ensure_structured_json(value: &Value, field_name: &str) -> Result<(), AppError> {
+    if value.is_object() || value.is_array() {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "{} must be structured JSON object or array",
+            field_name
+        )))
+    }
+}
+
+fn classify_escalation_artifact_policy(
+    content_text: Option<&str>,
+    content_json: &Value,
+    confirm: bool,
+) -> Result<EscalationArtifactPolicyDecision, AppError> {
+    ensure_no_secret_content(content_text, content_json)?;
+    let text = format!(
+        "{} {}",
+        content_text.unwrap_or_default(),
+        serde_json::to_string(content_json).unwrap_or_default()
+    )
+    .to_lowercase();
+
+    let privacy_classification = if contains_any(
+        &text,
+        &[
+            "resume",
+            "employment",
+            "job",
+            "opportunity",
+            "salary",
+            "cover letter",
+            "interview",
+            "candidate",
+            "career",
+        ],
+    ) {
+        EscalationArtifactPrivacyClass::Employment
+    } else if contains_any(
+        &text,
+        &[
+            "email",
+            "phone",
+            "address",
+            "medical",
+            "health",
+            "family",
+            "personal",
+            "ssn",
+            "social security",
+        ],
+    ) {
+        EscalationArtifactPrivacyClass::Personal
+    } else {
+        EscalationArtifactPrivacyClass::TechnicalOnly
+    };
+
+    match privacy_classification {
+        EscalationArtifactPrivacyClass::TechnicalOnly => Ok(EscalationArtifactPolicyDecision {
+            allowed: true,
+            requires_confirmation: false,
+            privacy_classification,
+            reason: "Technical-only escalation is allowed without confirmation.".to_string(),
+        }),
+        EscalationArtifactPrivacyClass::Personal | EscalationArtifactPrivacyClass::Employment
+            if confirm =>
+        {
+            Ok(EscalationArtifactPolicyDecision {
+                allowed: true,
+                requires_confirmation: true,
+                privacy_classification,
+                reason: "Confirmed personal or employment escalation.".to_string(),
+            })
+        }
+        EscalationArtifactPrivacyClass::Personal | EscalationArtifactPrivacyClass::Employment => {
+            Err(AppError::PolicyDenied(
+                "personal or employment escalation requires confirmation".to_string(),
+            ))
+        }
+    }
+}
+
+fn ensure_no_secret_content(
+    content_text: Option<&str>,
+    content_json: &Value,
+) -> Result<(), AppError> {
+    let text = format!(
+        "{} {}",
+        content_text.unwrap_or_default(),
+        serde_json::to_string(content_json).unwrap_or_default()
+    );
+    let lower = text.to_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "password",
+            "api_key",
+            "apikey",
+            "secret",
+            "authorization",
+            "bearer ",
+            "private_key",
+            "token",
+            "cookie",
+        ],
+    ) || text.split_whitespace().any(looks_like_secret_token)
+    {
+        return Err(AppError::PolicyDenied(
+            "escalation artifact contains secrets and is blocked".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn looks_like_secret_token(value: &str) -> bool {
+    let trimmed = value.trim_matches(|ch: char| {
+        matches!(ch, ',' | '.' | ';' | ':' | '"' | '\'' | ')' | ']' | '}')
+    });
+    if trimmed.len() == 36 && trimmed.chars().filter(|ch| *ch == '-').count() == 4 {
+        return false;
+    }
+
+    trimmed.starts_with("sk-")
+        || trimmed.starts_with("ghp_")
+        || trimmed.starts_with("xoxb-")
+        || (trimmed.len() >= 32
+            && trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
+}
+
+fn clean_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn merge_metadata(metadata: Option<Value>, required: Value) -> Value {
+    let mut merged = metadata.unwrap_or_else(|| json!({}));
+    if !merged.is_object() {
+        merged = json!({ "user_metadata": merged });
+    }
+
+    if let (Some(target), Some(required)) = (merged.as_object_mut(), required.as_object()) {
+        for (key, value) in required {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+
+    merged
+}
+
 async fn create_task_link(
     state: &AppState,
     task_request_id: Uuid,
@@ -681,6 +1344,48 @@ async fn create_task_link(
         .create_task_link(TaskLink::new(
             "task_request".to_string(),
             task_request_id,
+            target_type.to_string(),
+            target_id,
+            relationship.to_string(),
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|err| AppError::Internal(err.to_string()))
+}
+
+async fn create_artifact_link(
+    state: &AppState,
+    response_artifact_id: Uuid,
+    request_artifact_id: Uuid,
+    relationship: &str,
+) -> Result<(), AppError> {
+    state
+        .session_memory
+        .create_task_link(TaskLink::new(
+            "task_artifact".to_string(),
+            response_artifact_id,
+            "task_artifact".to_string(),
+            request_artifact_id,
+            relationship.to_string(),
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|err| AppError::Internal(err.to_string()))
+}
+
+async fn create_entity_link(
+    state: &AppState,
+    source_type: &str,
+    source_id: Uuid,
+    target_type: &str,
+    target_id: Uuid,
+    relationship: &str,
+) -> Result<(), AppError> {
+    state
+        .session_memory
+        .create_task_link(TaskLink::new(
+            source_type.to_string(),
+            source_id,
             target_type.to_string(),
             target_id,
             relationship.to_string(),
