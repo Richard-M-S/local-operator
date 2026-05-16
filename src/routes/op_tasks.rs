@@ -11,6 +11,7 @@ use crate::{
     context::models::SavedContext,
     domains::employment::models::default_employment_profile_id,
     error::AppError,
+    models::session::{TaskLink, TaskRequest},
     op_tasks::models::{
         ArtifactSearch, OpTask, OpTaskRun, PromoteArtifactToContextRequest, TaskArtifact,
     },
@@ -275,13 +276,21 @@ pub async fn run(
     State(state): State<AppState>,
     Path(task_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let run = state.op_tasks.run_task(task_id).await?;
-    Ok(Json(serde_json::json!({ "run": run })))
+    run_task_with_request(state, task_id, None, "api").await
 }
 
 pub async fn run_for_profile(
     State(state): State<AppState>,
     Path((profile_id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    run_task_with_request(state, task_id, Some(profile_id), "api").await
+}
+
+async fn run_task_with_request(
+    state: AppState,
+    task_id: Uuid,
+    required_profile_id: Option<Uuid>,
+    source: &str,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let task = state
         .op_tasks
@@ -289,12 +298,109 @@ pub async fn run_for_profile(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("task {} not found", task_id)))?;
 
-    if task.profile_id != profile_id {
+    if required_profile_id.is_some_and(|profile_id| task.profile_id != profile_id) {
         return Err(AppError::NotFound(format!("task {} not found", task_id)));
     }
 
-    let run = state.op_tasks.run_task(task_id).await?;
-    Ok(Json(serde_json::json!({ "run": run })))
+    let mut task_request = TaskRequest::new(
+        task.profile_id,
+        source.to_string(),
+        format!("Run OpTask '{}' ({})", task.name, task.id),
+    );
+    task_request.intent = Some(task.task_type.clone());
+    task_request.status = "running".to_string();
+    task_request.op_task_id = Some(task.id);
+    let task_request = state
+        .session_memory
+        .create_task_request(task_request)
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+    create_task_link(
+        &state,
+        task_request.id,
+        "op_task",
+        task.id,
+        "manual_run_task",
+    )
+    .await?;
+
+    let run_result = state.op_tasks.run_task(task_id).await;
+    let run = match run_result {
+        Ok(run) => run,
+        Err(err) => {
+            state
+                .session_memory
+                .update_task_request(task_request.id, "failed", Some(task.id), None, None)
+                .await
+                .map_err(|update_err| AppError::Internal(update_err.to_string()))?;
+            return Err(err);
+        }
+    };
+
+    let artifact_id = run.artifacts.first().map(|artifact| artifact.id);
+    let status = if matches!(
+        run.status,
+        crate::op_tasks::models::OpTaskRunStatus::Succeeded
+    ) {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    state
+        .session_memory
+        .update_task_request(
+            task_request.id,
+            status,
+            Some(task.id),
+            Some(run.id),
+            artifact_id,
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+    create_task_link(
+        &state,
+        task_request.id,
+        "op_task_run",
+        run.id,
+        "manual_run_result",
+    )
+    .await?;
+    if let Some(artifact_id) = artifact_id {
+        create_task_link(
+            &state,
+            task_request.id,
+            "task_artifact",
+            artifact_id,
+            "primary_artifact",
+        )
+        .await?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "run": run,
+        "task_request_id": task_request.id
+    })))
+}
+
+async fn create_task_link(
+    state: &AppState,
+    task_request_id: Uuid,
+    target_type: &str,
+    target_id: Uuid,
+    relationship: &str,
+) -> Result<(), AppError> {
+    state
+        .session_memory
+        .create_task_link(TaskLink::new(
+            "task_request".to_string(),
+            task_request_id,
+            target_type.to_string(),
+            target_id,
+            relationship.to_string(),
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|err| AppError::Internal(err.to_string()))
 }
 
 pub async fn get_run(

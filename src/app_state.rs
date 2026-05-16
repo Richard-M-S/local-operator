@@ -4,7 +4,7 @@ use crate::context::{ContextRepository, ContextService};
 use crate::domains::employment::{
     EmploymentContextService, EmploymentOpportunityService, EmploymentRepository,
 };
-use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService};
+use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService, TaskPlanner};
 use crate::readers::ReaderService;
 use crate::services::{
     audit_service::AuditService, llm_router::LlmRouter, llm_service::LlmService,
@@ -64,7 +64,8 @@ impl AppState {
             llm_router.clone(),
             employment_repo.clone(),
         );
-        let op_tasks = OpTaskService::new(op_task_repo, op_task_runner);
+        let task_planner = TaskPlanner::new(llm_router.clone());
+        let op_tasks = OpTaskService::new(op_task_repo, op_task_runner, task_planner);
 
         let operator = OperatorService::new(
             tools.clone(),

@@ -40,10 +40,60 @@ pub struct OpWorkItem {
     pub name: String,
     pub description: Option<String>,
     pub order: u32,
+    #[serde(default = "default_step_type")]
+    pub step_type: String,
+    #[serde(default)]
+    pub model_purpose: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_args_json: Option<serde_json::Value>,
     pub status: OpTaskRunStatus,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub details: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub input_artifact_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub output_artifact_ids: Vec<Uuid>,
+}
+
+impl OpWorkItem {
+    pub fn planned(
+        run_id: Uuid,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        step_type: impl Into<String>,
+        order: u32,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            run_id,
+            name: name.into(),
+            description: Some(description.into()),
+            order,
+            step_type: step_type.into(),
+            model_purpose: None,
+            model_name: None,
+            tool_name: None,
+            tool_args_json: None,
+            status: OpTaskRunStatus::Pending,
+            started_at: None,
+            completed_at: None,
+            details: None,
+            error: None,
+            input_artifact_ids: vec![],
+            output_artifact_ids: vec![],
+        }
+    }
+}
+
+fn default_step_type() -> String {
+    "step".to_string()
 }
 
 /// Output or artifact created during a task run.

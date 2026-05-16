@@ -3,9 +3,9 @@ use crate::{
     error::AppError,
     op_tasks::models::{
         ArtifactContextBodySource, ArtifactSearch, OpTask, OpTaskRun, OpTaskRunStatus,
-        OpTaskStatus, OpWorkItem, PromoteArtifactToContextRequest, TaskArtifact,
+        OpTaskStatus, PromoteArtifactToContextRequest, TaskArtifact,
     },
-    op_tasks::{OpTaskRepository, OpTaskRunner},
+    op_tasks::{OpTaskRepository, OpTaskRunner, TaskPlanner},
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -15,11 +15,16 @@ use uuid::Uuid;
 pub struct OpTaskService {
     repo: OpTaskRepository,
     runner: OpTaskRunner,
+    planner: TaskPlanner,
 }
 
 impl OpTaskService {
-    pub fn new(repo: OpTaskRepository, runner: OpTaskRunner) -> Self {
-        Self { repo, runner }
+    pub fn new(repo: OpTaskRepository, runner: OpTaskRunner, planner: TaskPlanner) -> Self {
+        Self {
+            repo,
+            runner,
+            planner,
+        }
     }
 
     pub async fn create_task(
@@ -159,14 +164,10 @@ impl OpTaskService {
     }
 
     pub async fn run_task(&self, task_id: Uuid) -> Result<OpTaskRun, AppError> {
-        self.start_task_run(task_id, vec![]).await
+        self.start_task_run(task_id).await
     }
 
-    pub async fn start_task_run(
-        &self,
-        task_id: Uuid,
-        work_items: Vec<OpWorkItem>,
-    ) -> Result<OpTaskRun, AppError> {
+    pub async fn start_task_run(&self, task_id: Uuid) -> Result<OpTaskRun, AppError> {
         let task = self
             .get_op_task(task_id)
             .await?
@@ -180,7 +181,9 @@ impl OpTaskService {
         }
 
         let run_id = Uuid::new_v4();
-        let prepared_items = work_items
+        let prepared_items = self
+            .planner
+            .plan(&task, run_id)
             .into_iter()
             .enumerate()
             .map(|(index, mut item)| {

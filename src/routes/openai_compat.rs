@@ -112,7 +112,13 @@ pub async fn chat_completions(
         };
         let response = state
             .operator
-            .run_chat(&operator_message, true, Some(profile_id))
+            .run_chat_with_session(
+                &operator_message,
+                true,
+                profile_id,
+                session.id,
+                "openai_compat",
+            )
             .await?;
         response_task_request_id = json_uuid(&response.data, "task_request_id");
         response_run_id = json_uuid_path(&response.data, &["run", "id"]);
