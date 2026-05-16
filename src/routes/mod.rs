@@ -12,6 +12,7 @@ pub mod artifacts;
 pub mod audit;
 pub mod auth;
 pub mod context;
+pub mod domains;
 pub mod employment;
 pub mod health;
 pub mod op_tasks;
@@ -24,6 +25,44 @@ pub mod task_requests;
 pub fn router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/api/status", get(status::status))
+        .route("/api/domains", get(domains::list))
+        .route("/api/domains/:domain", get(domains::get))
+        .route(
+            "/api/operator/meta/capabilities",
+            get(crate::domains::operator::routes::capabilities),
+        )
+        .route(
+            "/api/operator/meta/state",
+            get(crate::domains::operator::routes::inspect_state),
+        )
+        .route(
+            "/api/operator-meta/review-failed-task",
+            post(crate::domains::operator::routes::review_failed_task),
+        )
+        .route(
+            "/api/operator-meta/review-recent-tasks",
+            post(crate::domains::operator::routes::review_recent_tasks),
+        )
+        .route(
+            "/api/operator-meta/generate-patch-plan",
+            post(crate::domains::operator::routes::generate_patch_plan),
+        )
+        .route(
+            "/api/operator-meta/escalations",
+            post(artifacts::create_chatgpt_escalation_request),
+        )
+        .route(
+            "/api/operator-meta/escalations/:artifact_id/response",
+            post(artifacts::save_chatgpt_escalation_response),
+        )
+        .route(
+            "/api/operator-meta/artifacts/:artifact_id/convert-to-tasks",
+            post(crate::domains::operator::routes::convert_recommendation_to_tasks),
+        )
+        .route(
+            "/api/operator-meta/diagnostics",
+            get(crate::domains::operator::routes::show_operator_diagnostics),
+        )
         .route("/api/artifacts/latest", get(artifacts::latest))
         .route(
             "/api/artifacts/:artifact_id/continue",

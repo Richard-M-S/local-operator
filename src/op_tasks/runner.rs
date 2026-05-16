@@ -1,6 +1,13 @@
 use crate::adapters::openai_escalation::OpenAiEscalationClient;
 use crate::context::{models::ContextKind, ContextService};
 use crate::domains::employment::{models::EmploymentOpportunity, repository::EmploymentRepository};
+use crate::domains::operator::{
+    models::{
+        OperatorConvertRecommendationToTasksInput, OperatorGeneratePatchPlanInput,
+        OperatorReviewFailedTaskInput, OPERATOR_PATCH_PLAN, OPERATOR_TASK_DIAGNOSTIC,
+    },
+    OperatorMetaService,
+};
 use crate::op_tasks::models::{
     OpTask, OpTaskRun, OpTaskRunStatus, ReadUrlInput, SearchWebInput, TaskArtifact,
 };
@@ -23,6 +30,7 @@ pub struct OpTaskRunner {
     employment_repo: EmploymentRepository,
     context: ContextService,
     openai_escalation: Option<OpenAiEscalationClient>,
+    operator_meta: OperatorMetaService,
 }
 
 impl OpTaskRunner {
@@ -34,6 +42,7 @@ impl OpTaskRunner {
         employment_repo: EmploymentRepository,
         context: ContextService,
         openai_escalation: Option<OpenAiEscalationClient>,
+        operator_meta: OperatorMetaService,
     ) -> Self {
         Self {
             tool_execution,
@@ -43,6 +52,7 @@ impl OpTaskRunner {
             employment_repo,
             context,
             openai_escalation,
+            operator_meta,
         }
     }
 
@@ -58,7 +68,17 @@ impl OpTaskRunner {
                 self.run_employment_search_opportunities(&task, run).await
             }
             "artifact.summarize" => self.run_artifact_summary(&task, run).await,
-            "system.escalate_to_chatgpt" => self.run_chatgpt_escalation(task, run).await,
+            "system.escalate_to_chatgpt" | "operator.escalate_to_chatgpt" => {
+                self.run_chatgpt_escalation(task, run).await
+            }
+            "operator.review_failed_task" => self.run_operator_review_failed_task(&task, run).await,
+            "operator.generate_patch_plan" => {
+                self.run_operator_generate_patch_plan(&task, run).await
+            }
+            "operator.convert_recommendation_to_tasks" => {
+                self.run_operator_convert_recommendation_to_tasks(&task, run)
+                    .await
+            }
             _ => {
                 let message = format!("unsupported task type: {}", task.task_type);
                 if let Ok(step_id) = start_step(&mut run, "unsupported_task") {
@@ -427,6 +447,377 @@ impl OpTaskRunner {
                 artifact_id
             )
         });
+
+        Ok(run)
+    }
+
+    async fn run_operator_review_failed_task(
+        &self,
+        task: &OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
+        let load_run_step_id = start_step(&mut run, "load_failed_run")?;
+        let input: OperatorReviewFailedTaskInput =
+            match serde_json::from_value(task.input_json.clone()) {
+                Ok(input) => input,
+                Err(err) => {
+                    finish_step_with_error(&mut run, load_run_step_id, &err.to_string());
+                    return Err(anyhow!(err))
+                        .context("invalid operator.review_failed_task input_json");
+                }
+            };
+
+        let reviewed_run = match self
+            .operator_meta
+            .load_failed_run(run.profile_id, input.run_id)
+            .await
+        {
+            Ok(reviewed_run) => reviewed_run,
+            Err(err) => {
+                finish_step_with_error(&mut run, load_run_step_id, &err.to_string());
+                return Err(err).context("failed to load failed run");
+            }
+        };
+        finish_step(
+            &mut run,
+            load_run_step_id,
+            Some(format!("Loaded failed run {}.", reviewed_run.id)),
+            vec![],
+        );
+
+        let load_task_step_id = start_step(&mut run, "load_task_definition")?;
+        let reviewed_task = match self
+            .operator_meta
+            .load_task_definition(&reviewed_run, input.include_task)
+            .await
+        {
+            Ok(task) => task,
+            Err(err) => {
+                finish_step_with_error(&mut run, load_task_step_id, &err.to_string());
+                return Err(err).context("failed to load reviewed task");
+            }
+        };
+        finish_step(
+            &mut run,
+            load_task_step_id,
+            Some(if reviewed_task.is_some() {
+                "Loaded task definition.".to_string()
+            } else {
+                "Task definition omitted by input.".to_string()
+            }),
+            vec![],
+        );
+
+        let load_artifacts_step_id = start_step(&mut run, "load_run_artifacts")?;
+        let reviewed_artifacts = self
+            .operator_meta
+            .load_artifacts(&reviewed_run, input.include_artifacts);
+        for artifact in &reviewed_artifacts {
+            push_step_input_artifact(&mut run, load_artifacts_step_id, artifact.id);
+        }
+        finish_step(
+            &mut run,
+            load_artifacts_step_id,
+            Some(format!(
+                "Loaded {} artifact(s) from failed run.",
+                reviewed_artifacts.len()
+            )),
+            vec![],
+        );
+
+        let audit_step_id = start_step(&mut run, "load_recent_audit")?;
+        let audit_entries = match self
+            .operator_meta
+            .load_recent_audit(reviewed_run.id, input.include_recent_audit)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(err) => {
+                finish_step_with_error(&mut run, audit_step_id, &err.to_string());
+                return Err(err).context("failed to load audit entries");
+            }
+        };
+        finish_step(
+            &mut run,
+            audit_step_id,
+            Some(format!(
+                "Loaded {} audit entr{}.",
+                audit_entries.len(),
+                if audit_entries.len() == 1 { "y" } else { "ies" }
+            )),
+            vec![],
+        );
+
+        let classify_step_id = start_step(&mut run, "classify_failure")?;
+        let review_context = self.operator_meta.build_review_context(
+            input.clone(),
+            reviewed_run,
+            reviewed_task,
+            reviewed_artifacts,
+            audit_entries,
+        );
+        let diagnostic = self.operator_meta.build_diagnostic_packet(&review_context);
+        finish_step(
+            &mut run,
+            classify_step_id,
+            Some(format!(
+                "Classified failed run as {}.",
+                diagnostic.failure_classification.as_str()
+            )),
+            vec![],
+        );
+
+        let analyze_step_id = start_step(&mut run, "analyze_root_cause")?;
+        finish_step(
+            &mut run,
+            analyze_step_id,
+            Some(format!(
+                "Analyzed likely root cause and recommendation evidence for {}.",
+                diagnostic.failure_classification.as_str()
+            )),
+            vec![],
+        );
+
+        let save_step_id = start_step(&mut run, "save_diagnostic_artifact")?;
+        let diagnostic_artifact = self.operator_meta.diagnostic_artifact(&diagnostic)?;
+        let artifact_id = Uuid::new_v4();
+        run.artifacts.push(TaskArtifact {
+            id: artifact_id,
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(save_step_id),
+            name: diagnostic_artifact.name,
+            artifact_type: diagnostic_artifact.artifact_type,
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(diagnostic_artifact.metadata),
+            content_text: Some(diagnostic_artifact.content_text),
+            content_json: Some(diagnostic_artifact.content_json),
+        });
+        finish_step(
+            &mut run,
+            save_step_id,
+            Some("Saved operator_task_diagnostic artifact.".to_string()),
+            vec![artifact_id],
+        );
+
+        let summary_step_id = start_step(&mut run, "summarize_operator_review")?;
+        finish_step(
+            &mut run,
+            summary_step_id,
+            Some(format!(
+                "Prepared final summary for failed run {}.",
+                diagnostic.source.run_id
+            )),
+            vec![],
+        );
+
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some(format!(
+            "Reviewed failed run {} and saved diagnostic artifact {}.",
+            diagnostic.source.run_id, artifact_id
+        ));
+
+        Ok(run)
+    }
+
+    async fn run_operator_generate_patch_plan(
+        &self,
+        task: &OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
+        let load_step_id = start_step(&mut run, "load_diagnostic_artifact")?;
+        let input: OperatorGeneratePatchPlanInput =
+            match serde_json::from_value(task.input_json.clone()) {
+                Ok(input) => input,
+                Err(err) => {
+                    finish_step_with_error(&mut run, load_step_id, &err.to_string());
+                    return Err(anyhow!(err))
+                        .context("invalid operator.generate_patch_plan input_json");
+                }
+            };
+
+        let diagnostic_artifact = match self
+            .operator_meta
+            .load_artifact(run.profile_id, input.artifact_id, OPERATOR_TASK_DIAGNOSTIC)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                finish_step_with_error(&mut run, load_step_id, &err.to_string());
+                return Err(err).context("failed to load diagnostic artifact");
+            }
+        };
+        push_step_input_artifact(&mut run, load_step_id, diagnostic_artifact.id);
+        finish_step(
+            &mut run,
+            load_step_id,
+            Some(format!(
+                "Loaded diagnostic artifact {}.",
+                diagnostic_artifact.id
+            )),
+            vec![],
+        );
+
+        let build_step_id = start_step(&mut run, "build_patch_plan")?;
+        let patch_plan_artifact = match self.operator_meta.patch_plan_artifact(
+            &diagnostic_artifact,
+            input
+                .title
+                .unwrap_or_else(|| "Operator patch plan".to_string()),
+        ) {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                finish_step_with_error(&mut run, build_step_id, &err.to_string());
+                return Err(err).context("failed to build patch plan");
+            }
+        };
+        finish_step(
+            &mut run,
+            build_step_id,
+            Some("Built read-only operator patch plan.".to_string()),
+            vec![],
+        );
+
+        let save_step_id = start_step(&mut run, "save_patch_plan_artifact")?;
+        let artifact_id = Uuid::new_v4();
+        run.artifacts.push(TaskArtifact {
+            id: artifact_id,
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(save_step_id),
+            name: patch_plan_artifact.name,
+            artifact_type: patch_plan_artifact.artifact_type,
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(patch_plan_artifact.metadata),
+            content_text: Some(patch_plan_artifact.content_text),
+            content_json: Some(patch_plan_artifact.content_json),
+        });
+        finish_step(
+            &mut run,
+            save_step_id,
+            Some("Saved operator_patch_plan artifact.".to_string()),
+            vec![artifact_id],
+        );
+
+        let summary_step_id = start_step(&mut run, "summarize_patch_plan")?;
+        finish_step(
+            &mut run,
+            summary_step_id,
+            Some(format!(
+                "Prepared final summary for patch plan artifact {}.",
+                artifact_id
+            )),
+            vec![],
+        );
+
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some(format!(
+            "Generated patch plan artifact {} from diagnostic artifact {}.",
+            artifact_id, diagnostic_artifact.id
+        ));
+
+        Ok(run)
+    }
+
+    async fn run_operator_convert_recommendation_to_tasks(
+        &self,
+        task: &OpTask,
+        mut run: OpTaskRun,
+    ) -> anyhow::Result<OpTaskRun> {
+        let load_step_id = start_step(&mut run, "load_patch_plan_artifact")?;
+        let input: OperatorConvertRecommendationToTasksInput =
+            match serde_json::from_value(task.input_json.clone()) {
+                Ok(input) => input,
+                Err(err) => {
+                    finish_step_with_error(&mut run, load_step_id, &err.to_string());
+                    return Err(anyhow!(err))
+                        .context("invalid operator.convert_recommendation_to_tasks input_json");
+                }
+            };
+
+        let patch_plan_artifact = match self
+            .operator_meta
+            .load_artifact(run.profile_id, input.artifact_id, OPERATOR_PATCH_PLAN)
+            .await
+        {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                finish_step_with_error(&mut run, load_step_id, &err.to_string());
+                return Err(err).context("failed to load patch plan artifact");
+            }
+        };
+        push_step_input_artifact(&mut run, load_step_id, patch_plan_artifact.id);
+        finish_step(
+            &mut run,
+            load_step_id,
+            Some(format!(
+                "Loaded patch plan artifact {}.",
+                patch_plan_artifact.id
+            )),
+            vec![],
+        );
+
+        let build_step_id = start_step(&mut run, "build_implementation_task_set")?;
+        let task_set_artifact = match self
+            .operator_meta
+            .implementation_task_set_artifact(run.profile_id, &patch_plan_artifact)
+        {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                finish_step_with_error(&mut run, build_step_id, &err.to_string());
+                return Err(err).context("failed to build implementation task set");
+            }
+        };
+        finish_step(
+            &mut run,
+            build_step_id,
+            Some("Built read-only implementation task set.".to_string()),
+            vec![],
+        );
+
+        let save_step_id = start_step(&mut run, "save_implementation_task_set_artifact")?;
+        let artifact_id = Uuid::new_v4();
+        run.artifacts.push(TaskArtifact {
+            id: artifact_id,
+            profile_id: run.profile_id,
+            run_id: run.id,
+            work_item_id: Some(save_step_id),
+            name: task_set_artifact.name,
+            artifact_type: task_set_artifact.artifact_type,
+            location: None,
+            created_at: Utc::now(),
+            metadata: Some(task_set_artifact.metadata),
+            content_text: Some(task_set_artifact.content_text),
+            content_json: Some(task_set_artifact.content_json),
+        });
+        finish_step(
+            &mut run,
+            save_step_id,
+            Some("Saved operator_implementation_task_set artifact.".to_string()),
+            vec![artifact_id],
+        );
+
+        let summary_step_id = start_step(&mut run, "summarize_implementation_task_set")?;
+        finish_step(
+            &mut run,
+            summary_step_id,
+            Some(format!(
+                "Prepared final summary for implementation task set artifact {}.",
+                artifact_id
+            )),
+            vec![],
+        );
+
+        run.status = OpTaskRunStatus::Succeeded;
+        run.completed_at = Some(Utc::now());
+        run.summary = Some(format!(
+            "Generated implementation task set artifact {} from patch plan artifact {}. No OpTasks were created.",
+            artifact_id, patch_plan_artifact.id
+        ));
 
         Ok(run)
     }

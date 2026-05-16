@@ -11,6 +11,25 @@ pub struct AuditItem {
     pub ok: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditExecutionSummary {
+    pub created_at: String,
+    pub raw_input: String,
+    pub parsed_intent: Option<String>,
+    pub risk_tier: i32,
+    pub allowed: bool,
+    pub final_message: Option<String>,
+    pub execution_type: Option<String>,
+    pub name: Option<String>,
+    pub task_id: Option<Uuid>,
+    pub run_id: Option<Uuid>,
+    pub work_item_id: Option<Uuid>,
+    pub model_purpose: Option<String>,
+    pub policy_decision: Option<String>,
+    pub success: Option<bool>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AuditService {
     db: SqlitePool,
@@ -91,6 +110,31 @@ impl AuditService {
             })
             .collect())
     }
+
+    pub async fn recent_for_run(
+        &self,
+        run_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<AuditExecutionSummary>> {
+        let rows = sqlx::query_as::<_, DetailedAuditRow>(
+            r#"
+            SELECT created_at, raw_input, parsed_intent, risk_tier,
+                   allowed, actions_json, results_json, final_message
+            FROM audit_log
+            ORDER BY created_at DESC
+            LIMIT ?1
+            "#,
+        )
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(AuditExecutionSummary::from_row)
+            .filter(|item| item.run_id == Some(run_id))
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,4 +160,60 @@ struct AuditRow {
     created_at: String,
     raw_input: String,
     allowed: i32,
+}
+
+#[derive(FromRow)]
+struct DetailedAuditRow {
+    created_at: String,
+    raw_input: String,
+    parsed_intent: Option<String>,
+    risk_tier: i32,
+    allowed: i32,
+    actions_json: Option<String>,
+    results_json: Option<String>,
+    final_message: Option<String>,
+}
+
+impl AuditExecutionSummary {
+    fn from_row(row: DetailedAuditRow) -> Option<Self> {
+        let actions = row
+            .actions_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<ExecutionAuditRecord>(value).ok());
+        let results = row
+            .results_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok());
+
+        Some(Self {
+            created_at: row.created_at,
+            raw_input: row.raw_input,
+            parsed_intent: row.parsed_intent,
+            risk_tier: row.risk_tier,
+            allowed: row.allowed != 0,
+            final_message: row.final_message,
+            execution_type: actions.as_ref().map(|record| record.execution_type.clone()),
+            name: actions.as_ref().map(|record| record.name.clone()),
+            task_id: actions.as_ref().and_then(|record| record.task_id),
+            run_id: actions.as_ref().and_then(|record| record.run_id),
+            work_item_id: actions.as_ref().and_then(|record| record.work_item_id),
+            model_purpose: actions
+                .as_ref()
+                .and_then(|record| record.model_purpose.clone()),
+            policy_decision: actions
+                .as_ref()
+                .map(|record| record.policy_decision.clone()),
+            success: actions.as_ref().map(|record| record.success),
+            error: actions
+                .as_ref()
+                .and_then(|record| record.error.clone())
+                .or_else(|| {
+                    results
+                        .as_ref()
+                        .and_then(|value| value.get("error"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                }),
+        })
+    }
 }

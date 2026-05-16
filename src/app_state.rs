@@ -4,6 +4,7 @@ use crate::context::{ContextRepository, ContextService};
 use crate::domains::employment::{
     EmploymentContextService, EmploymentOpportunityService, EmploymentRepository,
 };
+use crate::domains::operator::OperatorMetaService;
 use crate::op_tasks::{OpTaskRepository, OpTaskRunner, OpTaskService, TaskPlanner};
 use crate::readers::ReaderService;
 use crate::services::{
@@ -40,6 +41,7 @@ pub struct AppState {
     pub employment: EmploymentOpportunityService,
     #[allow(dead_code)]
     pub employment_context: EmploymentContextService,
+    pub operator_meta: OperatorMetaService,
     pub session_memory: SessionMemoryRepository,
 }
 
@@ -75,6 +77,7 @@ impl AppState {
         let session_memory = SessionMemoryRepository::new(db.clone());
         let context_repo = ContextRepository::new(db.clone());
         let context = ContextService::new(context_repo);
+        let operator_meta = OperatorMetaService::new(op_task_repo.clone(), audit.clone());
 
         let op_task_runner = OpTaskRunner::new(
             tool_execution.clone(),
@@ -84,6 +87,7 @@ impl AppState {
             employment_repo.clone(),
             context.clone(),
             openai_escalation,
+            operator_meta.clone(),
         );
         let task_planner = TaskPlanner::new(llm_router.clone());
         let op_tasks = OpTaskService::new(op_task_repo, op_task_runner, task_planner);
@@ -120,6 +124,7 @@ impl AppState {
             context,
             employment,
             employment_context,
+            operator_meta,
             session_memory,
         })
     }

@@ -39,6 +39,7 @@ pub struct LatestArtifactSummary {
     pub metadata: Option<Value>,
     pub content_text: Option<String>,
     pub content_json: Option<Value>,
+    pub allowed_continuations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +76,8 @@ pub struct ContinueArtifactRequest {
 pub struct ContinueArtifactResponse {
     pub ok: bool,
     pub intent: String,
+    pub source_artifact_type: String,
+    pub allowed_continuations: Vec<String>,
     pub task_request: TaskRequest,
     pub task: OpTask,
     pub run: OpTaskRunSummary,
@@ -436,7 +439,7 @@ pub async fn continue_from_artifact(
         ]
     } else if is_escalation_response && !created_tasks.is_empty() {
         vec![
-            "run_task".to_string(),
+            "review_draft_tasks".to_string(),
             "show_latest_artifacts".to_string(),
             "continue_from_artifact".to_string(),
         ]
@@ -450,6 +453,8 @@ pub async fn continue_from_artifact(
     Ok(Json(ContinueArtifactResponse {
         ok: matches!(run.status, OpTaskRunStatus::Succeeded),
         intent: continuation.intent,
+        source_artifact_type: artifact.artifact_type.clone(),
+        allowed_continuations: allowed_continuations_for_artifact_type(&artifact.artifact_type),
         task_request,
         task,
         run: run_summary,
@@ -590,6 +595,8 @@ pub async fn save_chatgpt_escalation_response(
 
 impl LatestArtifactSummary {
     fn from_artifact(artifact: TaskArtifact, include_content: bool) -> Self {
+        let allowed_continuations =
+            allowed_continuations_for_artifact_type(artifact.artifact_type.as_str());
         Self {
             id: artifact.id,
             profile_id: artifact.profile_id,
@@ -602,6 +609,7 @@ impl LatestArtifactSummary {
             metadata: artifact.metadata,
             content_text: include_content.then_some(artifact.content_text).flatten(),
             content_json: include_content.then_some(artifact.content_json).flatten(),
+            allowed_continuations,
         }
     }
 }
@@ -640,7 +648,204 @@ fn build_artifact_continuation(
         "scored_opportunity_matches" if wants_create_opportunities(message) => {
             continue_from_scored_matches_artifact(artifact, message, source)
         }
+        "operator_task_diagnostic" => {
+            continue_from_operator_task_diagnostic(artifact, message, source)
+        }
+        "operator_patch_plan" => continue_from_operator_patch_plan(artifact, message, source),
+        "chatgpt_escalation_response" => {
+            continue_from_chatgpt_escalation_response(artifact, message, source)
+        }
         _ => Ok(generic_artifact_summary_plan(artifact, message, source)),
+    }
+}
+
+fn allowed_continuations_for_artifact_type(artifact_type: &str) -> Vec<String> {
+    let continuations: &[&str] = match artifact_type {
+        "operator_task_diagnostic" => &[
+            "generate_patch_plan",
+            "escalate_to_chatgpt",
+            "create_follow_up_tasks",
+        ],
+        "operator_patch_plan" => &[
+            "create_implementation_tasks",
+            "create_docs_update_task",
+            "create_test_plan",
+        ],
+        "operator_tool_spec" => &["create_tool_implementation_plan"],
+        "operator_openapi_review" => &["create_openapi_update_task"],
+        "chatgpt_escalation_response" => &[
+            "generate_patch_plan",
+            "create_implementation_task_set",
+            "summarize_recommendation",
+            "convert_recommendation_to_tasks",
+        ],
+        "operator_implementation_task_set" => &["approve_create_tasks", "continue_from_task_set"],
+        "chatgpt_escalation_request" => &["save_chatgpt_response"],
+        "operator_gap_analysis" => &["design_task_type", "design_tool", "generate_patch_plan"],
+        "operator_task_type_spec" => &["create_implementation_tasks", "review_openapi_surface"],
+        "operator_test_plan" => &["create_test_task", "summarize_test_plan"],
+        _ => &["summarize_artifact"],
+    };
+
+    continuations
+        .iter()
+        .map(|continuation| (*continuation).to_string())
+        .collect()
+}
+
+fn continue_from_operator_task_diagnostic(
+    artifact: &TaskArtifact,
+    message: &str,
+    source: &str,
+) -> Result<ArtifactContinuationPlan, AppError> {
+    let normalized = message.to_lowercase();
+    if contains_any(&normalized, &["escalate", "chatgpt", "chat gpt"]) {
+        return Ok(operator_continuation_plan(
+            "artifact.continue.operator_task_diagnostic.escalate_to_chatgpt",
+            "Escalate diagnostic to ChatGPT",
+            "operator.escalate_to_chatgpt",
+            "escalation_packet",
+            artifact,
+            message,
+            source,
+            json!({
+                "mode": "manual",
+                "confirm": false,
+                "desired_output": "Review this operator diagnostic and return structured recommendations and next steps.",
+                "context_json": artifact.content_json,
+                "context_text": artifact.content_text,
+            }),
+        ));
+    }
+
+    Ok(operator_continuation_plan(
+        "artifact.continue.operator_task_diagnostic.generate_patch_plan",
+        "Generate patch plan",
+        "operator.generate_patch_plan",
+        "patch_plan",
+        artifact,
+        message,
+        source,
+        json!({
+            "artifact_id": artifact.id,
+        }),
+    ))
+}
+
+fn continue_from_operator_patch_plan(
+    artifact: &TaskArtifact,
+    message: &str,
+    source: &str,
+) -> Result<ArtifactContinuationPlan, AppError> {
+    let normalized = message.to_lowercase();
+    if contains_any(
+        &normalized,
+        &[
+            "implementation",
+            "implement",
+            "task set",
+            "tasks",
+            "create tasks",
+        ],
+    ) {
+        return Ok(operator_continuation_plan(
+            "artifact.continue.operator_patch_plan.create_implementation_tasks",
+            "Create implementation task set",
+            "operator.convert_recommendation_to_tasks",
+            "implementation_task_planning",
+            artifact,
+            message,
+            source,
+            json!({
+                "artifact_id": artifact.id,
+            }),
+        ));
+    }
+
+    let intent = if contains_any(&normalized, &["doc", "readme", "openapi"]) {
+        "artifact.continue.operator_patch_plan.create_docs_update_task"
+    } else if contains_any(&normalized, &["test", "validation", "verify"]) {
+        "artifact.continue.operator_patch_plan.create_test_plan"
+    } else {
+        "artifact.continue.operator_patch_plan.summarize"
+    };
+    Ok(operator_continuation_plan(
+        intent,
+        "Continue from patch plan",
+        "artifact.summarize",
+        "artifact_continuation",
+        artifact,
+        message,
+        source,
+        json!({}),
+    ))
+}
+
+fn continue_from_chatgpt_escalation_response(
+    artifact: &TaskArtifact,
+    message: &str,
+    source: &str,
+) -> Result<ArtifactContinuationPlan, AppError> {
+    let normalized = message.to_lowercase();
+    let intent = if contains_any(&normalized, &["implementation", "task", "convert"]) {
+        "artifact.continue.chatgpt_escalation_response.convert_recommendation_to_tasks"
+    } else if contains_any(&normalized, &["patch plan", "plan"]) {
+        "artifact.continue.chatgpt_escalation_response.generate_patch_plan"
+    } else {
+        "artifact.continue.chatgpt_escalation_response.summarize_recommendation"
+    };
+
+    Ok(operator_continuation_plan(
+        intent,
+        "Continue from ChatGPT escalation response",
+        "artifact.summarize",
+        "escalation_follow_up",
+        artifact,
+        message,
+        source,
+        json!({}),
+    ))
+}
+
+fn operator_continuation_plan(
+    intent: &str,
+    name: &str,
+    task_type: &str,
+    model_purpose: &str,
+    artifact: &TaskArtifact,
+    message: &str,
+    source: &str,
+    mut input_json: Value,
+) -> ArtifactContinuationPlan {
+    let input = input_json.as_object_mut().expect("object literal");
+    input.insert(
+        "user_request".to_string(),
+        Value::String(message.to_string()),
+    );
+    input.insert(
+        "source_artifact_id".to_string(),
+        Value::String(artifact.id.to_string()),
+    );
+    input.insert(
+        "source_artifact_type".to_string(),
+        Value::String(artifact.artifact_type.clone()),
+    );
+    input.insert("priority".to_string(), Value::String("normal".to_string()));
+    input.insert(
+        "model_purpose".to_string(),
+        Value::String(model_purpose.to_string()),
+    );
+    input.insert("source".to_string(), Value::String(source.to_string()));
+
+    ArtifactContinuationPlan {
+        intent: intent.to_string(),
+        task_type: task_type.to_string(),
+        name: name.to_string(),
+        description: Some(format!(
+            "Created from artifact continuation for {}.",
+            artifact.id
+        )),
+        input_json,
     }
 }
 
@@ -1005,6 +1210,8 @@ fn classify_recommended_task_type(title: &str, detail: Option<&str>) -> String {
         "reader.read_url".to_string()
     } else if contains_any(&normalized, &["status", "health check", "system report"]) {
         "system.status_report".to_string()
+    } else if contains_any(&normalized, &["escalate", "chatgpt", "chat gpt"]) {
+        "operator.escalate_to_chatgpt".to_string()
     } else {
         "artifact.summarize".to_string()
     }
@@ -1015,9 +1222,11 @@ fn is_supported_follow_up_task_type(task_type: &str) -> bool {
         task_type,
         "artifact.summarize"
             | "employment.search_opportunities"
+            | "operator.escalate_to_chatgpt"
             | "reader.read_url"
             | "reader.search_web"
             | "system.status_report"
+            | "system.escalate_to_chatgpt"
     )
 }
 
@@ -1064,6 +1273,16 @@ fn build_recommended_action_input(
             "source_artifact_type": artifact.artifact_type,
             "model_purpose": "escalation_follow_up",
         }),
+        "operator.escalate_to_chatgpt" | "system.escalate_to_chatgpt" => json!({
+            "user_request": user_request,
+            "mode": "manual",
+            "confirm": false,
+            "desired_output": "Return structured findings, recommendations, and next steps.",
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "escalation_packet",
+        }),
         _ => json!({
             "user_request": user_request,
             "artifact_name": artifact.name,
@@ -1093,12 +1312,12 @@ async fn create_escalation_follow_up_tasks(
                 format!("Follow up: {}", action.title),
                 action.detail.clone().or_else(|| {
                     Some(format!(
-                        "Created from ChatGPT escalation response artifact {}.",
+                        "Draft task created from ChatGPT escalation response artifact {}.",
                         artifact.id
                     ))
                 }),
                 action.input_json.clone(),
-                true,
+                false,
             )
             .await?;
         create_entity_link(

@@ -1,6 +1,6 @@
 # local-operator
 
-Local Operator is a local-first automation service for server operations, profile-scoped employment workflows, durable task artifacts, reusable context, chat memory, and Home Assistant inspection.
+Local Operator is a local-first automation service for server operations, profile-scoped employment workflows, durable task execution, reusable artifacts, context promotion, chat memory, and Home Assistant inspection.
 
 It runs as a Rust/Axum API with SQLite persistence and a React/Vite operator console. The API can also be used from OpenAI-compatible chat clients through `/v1/models`, `/v1/chat/completions`, and the generated OpenAPI tool document at `/openapi.json`.
 
@@ -10,19 +10,24 @@ Working today:
 
 - Axum API server with SQLite migrations and persistence
 - optional bearer-token auth for protected routes
-- audit logging for tool execution
+- audited wrapper services for tool and model execution
 - system, Docker, and Home Assistant read-only tool modules
 - Home Assistant overview plus normalized energy/HVAC snapshots for climate, weather, power, energy, battery, pricing, and helper entities
 - OpenAI-compatible model and chat-completion routes backed by the local LLM router
 - chat/session memory that records sessions, messages, task requests, task runs, artifacts, and follow-up artifact references
 - natural-language operator chat that can read URLs, search the web, search employment opportunities, and create task-backed artifacts
-- Op Tasks with manual runs, run history, work items, artifacts, and artifact content storage
+- task request intake that turns Open WebUI/API/console requests into durable Op Tasks
+- Op Tasks with planned work items, manual runs, run history, artifact references, and artifact content storage
+- task-oriented OpenAPI operations for creating tasks, running tasks, showing artifacts, and continuing from artifacts
 - URL reading through `reader.read_url` and web search through `reader.search_web`
 - profile criteria driven employment search through `employment.search_opportunities`
-- artifact listing, detail, content, and save-to-context promotion routes
+- artifact listing, latest-artifact discovery, artifact continuation, detail, content, and save-to-context promotion routes
 - saved context notes scoped to employment profiles, with list, create, get, and search routes
 - employment profiles with criteria, notes, and email fields
 - employment opportunities scoped to profiles, including parse, score, cover-letter, archive, reject, restore, and artifact/source duplicate awareness
+- domain catalog for Home Operations, Research, Code, Infrastructure, Knowledge, Calendar, and Operator task-improvement workflows
+- Operator meta workflow for failed-task diagnosis, patch-plan artifacts, implementation task-set artifacts, and read-only self-review
+- manual and optional OpenAI API ChatGPT escalation artifacts with redaction/policy metadata and response linking
 - Operator Console for chat, profile setup, tasks, artifacts, daily review, and opportunity review
 
 Still intentionally basic:
@@ -32,6 +37,7 @@ Still intentionally basic:
 - context search uses SQL-style matching, not embeddings
 - duplicate protection is mostly application-level
 - Home Assistant tools are read-only; this project does not currently actuate devices
+- operator meta tasks do not write code, change config, restart services, or execute implementation tasks
 
 ## Run
 
@@ -108,6 +114,7 @@ For `local-operator-home`, chat requests are routed through Local Operator inste
 - create URL-reading tasks when the user asks to read a URL
 - create web-search tasks for search requests
 - create employment-search tasks from profile criteria
+- create operator diagnostic, patch-plan, task-set, and escalation tasks
 - save task request, run, and artifact ids into session memory
 - answer artifact follow-ups using the last artifact from the session
 
@@ -122,6 +129,106 @@ The chat completion request accepts OpenAI-style `messages` and also supports:
 
 If no session id is supplied, the API creates or resolves a session from the external conversation id or `user` value.
 
+## Task Lifecycle
+
+Local Operator treats meaningful work as task-backed execution:
+
+1. A chat client, API caller, or console request creates a `TaskRequest`.
+2. The request is classified into an `OpTask`, such as `reader.search_web`, `employment.search_opportunities`, `operator.review_failed_task`, or `operator.escalate_to_chatgpt`.
+3. `TaskPlanner` or a domain planner creates ordered `OpWorkItem` steps before execution.
+4. The runner executes the task and saves durable artifacts.
+5. The client can inspect latest artifacts or continue from an artifact.
+
+Preferred Open WebUI flow:
+
+```text
+POST /api/task-requests
+POST /api/task-requests/:task_request_id/run
+GET  /api/artifacts/latest
+POST /api/artifacts/:artifact_id/continue
+```
+
+OpenAPI operation ids for this flow are:
+
+- `createTaskFromNaturalLanguage`
+- `runTaskRequest`
+- `showLatestArtifacts`
+- `continueFromArtifact`
+- `getArtifactContent`
+
+Use the explicit `/api/operator-meta/...` routes for debugging/admin workflows; use `/api/task-requests` for normal natural-language use.
+
+## Domains
+
+The domain catalog describes task types, input schemas, planners, work item types, required tools, artifact types, model purposes, policy tiers, safety levels, and continuation rules.
+
+Routes:
+
+- `GET /api/domains`
+- `GET /api/domains/:domain`
+
+Current domains:
+
+- `home`: Home Assistant-backed status, energy, HVAC, and safety review
+- `research`: URL reading, web search, and future web briefings
+- `code`: repo review and future patch/test workflows
+- `infrastructure`: local system and container monitoring
+- `knowledge`: document/artifact intake and context promotion
+- `calendar`: planning and future calendar workflows
+- `operator`: Local Operator self-review and task-improvement workflows
+
+## Operator Meta Workflow
+
+The operator domain is the read-only self-improvement loop.
+
+Implemented task types:
+
+- `operator.review_failed_task`: loads a failed run, task definition, artifacts, recent audit entries, classifies the failure, and saves an `operator_task_diagnostic` artifact
+- `operator.generate_patch_plan`: consumes an `operator_task_diagnostic` and saves an `operator_patch_plan`
+- `operator.convert_recommendation_to_tasks`: consumes an `operator_patch_plan` and saves an `operator_implementation_task_set`
+- `operator.escalate_to_chatgpt`: collects and redacts context, then creates a `chatgpt_escalation_request` artifact; optional OpenAI API mode saves a linked response artifact
+
+Operator artifact types:
+
+- `operator_task_diagnostic`
+- `operator_gap_analysis`
+- `operator_task_type_spec`
+- `operator_tool_spec`
+- `operator_patch_plan`
+- `operator_test_plan`
+- `operator_openapi_review`
+- `operator_implementation_task_set`
+- `chatgpt_escalation_request`
+- `chatgpt_escalation_response`
+
+Operator meta routes:
+
+- `GET /api/operator/meta/capabilities`
+- `GET /api/operator/meta/state`
+- `POST /api/operator-meta/review-failed-task`
+- `POST /api/operator-meta/review-recent-tasks`
+- `POST /api/operator-meta/generate-patch-plan`
+- `POST /api/operator-meta/escalations`
+- `POST /api/operator-meta/escalations/:artifact_id/response`
+- `POST /api/operator-meta/artifacts/:artifact_id/convert-to-tasks`
+- `GET /api/operator-meta/diagnostics`
+
+The explicit operator-meta routes are primarily for debugging/admin tool use. They create durable task requests and tasks where appropriate; running still goes through the normal task run endpoint.
+
+## Artifact Continuation
+
+Artifacts include enough metadata for clients to ask "what can happen next?" and continue from prior output.
+
+Important continuation examples:
+
+- `search_result_set` -> read URLs, extract candidates, score matches
+- `readable_web_page` -> summarize, extract structured data, promote to context
+- `operator_task_diagnostic` -> generate patch plan, escalate to ChatGPT
+- `operator_patch_plan` -> create implementation task set, create docs/test plan
+- `chatgpt_escalation_response` -> summarize recommendation, generate follow-up task set
+
+Latest artifact responses include `allowed_continuations`, and continuation responses include the source artifact type plus allowed continuations.
+
 ## Main API Routes
 
 Public:
@@ -134,10 +241,33 @@ Public:
 Status and operator:
 
 - `GET /api/status`
+- `GET /api/domains`
+- `GET /api/domains/:domain`
 - `POST /api/operator/command`
 - `POST /api/operator/chat`
 - `POST /api/tools/execute`
 - `GET /api/audit/recent`
+
+Task lifecycle:
+
+- `POST /api/task-requests`
+- `POST /api/task-requests/:task_request_id/run`
+- `GET /api/artifacts/latest`
+- `POST /api/artifacts/:artifact_id/continue`
+- `POST /api/artifacts/chatgpt-escalation-requests`
+- `POST /api/artifacts/:artifact_id/chatgpt-escalation-response`
+
+Operator meta:
+
+- `GET /api/operator/meta/capabilities`
+- `GET /api/operator/meta/state`
+- `POST /api/operator-meta/review-failed-task`
+- `POST /api/operator-meta/review-recent-tasks`
+- `POST /api/operator-meta/generate-patch-plan`
+- `POST /api/operator-meta/escalations`
+- `POST /api/operator-meta/escalations/:artifact_id/response`
+- `POST /api/operator-meta/artifacts/:artifact_id/convert-to-tasks`
+- `GET /api/operator-meta/diagnostics`
 
 OpenAI compatibility:
 
@@ -250,7 +380,7 @@ curl -i -X POST http://localhost:8080/api/tools/execute \
 
 ## Safety Model
 
-Tool execution goes through a policy engine:
+Tool and model execution go through shared execution services that record audit history and normalize results. Tool execution also goes through the policy engine:
 
 - Tier 0: read-only actions, allowed automatically
 - Tier 1: low-risk write actions, confirmation or config opt-in required
@@ -258,6 +388,21 @@ Tool execution goes through a policy engine:
 - Tier 3: blocked by default
 
 The tools currently registered by the default config are Tier 0. The policy model exists so future write-capable tools can be added without bypassing confirmation checks.
+
+Operator meta has an additional safety ladder:
+
+- Level 1: Diagnose only. Read task state and artifacts, summarize failures, suggest fixes.
+- Level 2: Plan only. Generate patch plans, task specs, tool specs, and OpenAPI update plans as artifacts.
+- Level 3: Create draft tasks. Allowed only with confirmation; draft tasks are not executed automatically.
+- Level 4: Modify repo/code/config. Blocked for now.
+- Level 5: Execute operational changes such as restarting containers, changing Home Assistant automations, or altering secrets/config. Blocked for now.
+
+ChatGPT escalation has separate privacy handling:
+
+- technical-only escalation is low friction
+- personal or employment escalation requires confirmation
+- secret-bearing context is blocked
+- redaction and policy summaries are stored in artifact metadata
 
 ## Op Task Examples
 
@@ -306,10 +451,41 @@ List profile artifacts without full content:
 curl -i "http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-task-artifacts?artifact_type=search_result_set&limit=20"
 ```
 
+List latest artifacts across task request, task, run, profile, or artifact type:
+
+```bash
+curl -i "http://localhost:8080/api/artifacts/latest?profile_id=<PROFILE_ID>&limit=5"
+```
+
 Load artifact content separately:
 
 ```bash
 curl -i http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-task-artifacts/<ARTIFACT_ID>/content
+```
+
+Continue from an artifact:
+
+```bash
+curl -i -X POST http://localhost:8080/api/artifacts/<ARTIFACT_ID>/continue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Summarize this artifact and recommend the next action.",
+    "profile_id": "<PROFILE_ID>"
+  }'
+```
+
+Create and run a task from natural language:
+
+```bash
+curl -i -X POST http://localhost:8080/api/task-requests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Search for Salesforce architect jobs using my profile criteria and create opportunities for the best matches.",
+    "profile_id": "<PROFILE_ID>",
+    "source": "api"
+  }'
+
+curl -i -X POST http://localhost:8080/api/task-requests/<TASK_REQUEST_ID>/run
 ```
 
 ## Context Example
@@ -429,6 +605,24 @@ curl -i -X POST http://localhost:8080/api/operator/chat \
   }'
 ```
 
+Create an operator diagnostic task through natural-language intake:
+
+```bash
+curl -i -X POST http://localhost:8080/api/task-requests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Review failed task run 00000000-0000-0000-0000-000000000000 and recommend fixes.",
+    "profile_id": "00000000-0000-0000-0000-000000000001",
+    "source": "api"
+  }'
+```
+
+Inspect operator-domain capabilities and safety boundaries:
+
+```bash
+curl -i http://localhost:8080/api/operator/meta/capabilities
+```
+
 OpenAI-compatible call using session memory:
 
 ```bash
@@ -473,7 +667,9 @@ Important areas:
 - `src/op_tasks/`: saved tasks, manual runs, work items, artifacts, and runners
 - `src/readers/`: URL reading, readable text extraction, and web search
 - `src/context/`: saved reusable knowledge scoped by profile
+- `src/domains/catalog.rs`: domain catalog, model purposes, policy tiers, safety levels, and continuation rules
 - `src/domains/employment/`: profiles, opportunities, scoring, cover letters, and employment context
+- `src/domains/operator/`: operator meta models, planner, service, and debug/admin routes
 - `src/session_memory.rs`: chat sessions, messages, task requests, and task links
 - `src/tools/`: system, Docker, Home Assistant, and tool registry
 - `src/services/`: operator orchestration, audit, policy, LLM routing, and planning
@@ -493,3 +689,5 @@ The current migrations create tables for:
 - chat sessions and chat messages
 
 This makes task output durable: chat-created searches, URL reads, opportunity records, context promotions, and follow-up artifact references survive process restarts.
+
+Work items are currently stored inside `op_task_runs.work_items` JSON. The operator meta state endpoint exposes them through runs today; promoting work items into their own table is a later maturation step.

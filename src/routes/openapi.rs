@@ -93,6 +93,14 @@ pub async fn openapi_json() -> Json<Value> {
                                             "source": "open_webui"
                                         }
                                     },
+                                    "reviewFailedTask": {
+                                        "summary": "Create an operator diagnostic task",
+                                        "value": {
+                                            "message": "Review failed task run 00000000-0000-0000-0000-000000000000 and recommend a fix.",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "source": "open_webui"
+                                        }
+                                    },
                                     "manualChatGptEscalation": {
                                         "summary": "Create a manual ChatGPT escalation request task",
                                         "value": {
@@ -119,6 +127,392 @@ pub async fn openapi_json() -> Json<Value> {
                             "content": {
                                 "application/json": {
                                     "schema": { "$ref": "#/components/schemas/CreateTaskFromMessageResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/domains": {
+                "get": {
+                    "operationId": "listLocalOperatorDomains",
+                    "summary": "List Local Operator domains",
+                    "description": "Returns the prioritized domain catalog used to organize task types, input schemas, planners, work item types, required tools, artifacts, model purposes, policy tiers, and continuation rules. Use this to understand what Local Operator can do now versus what is planned.",
+                    "security": [{ "BearerAuth": [] }],
+                    "responses": {
+                        "200": {
+                            "description": "Domain catalog",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/DomainCatalogResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/domains/{domain}": {
+                "get": {
+                    "operationId": "getLocalOperatorDomain",
+                    "summary": "Get one Local Operator domain",
+                    "description": "Returns one domain descriptor, including task types and continuation rules. Domain IDs include home, research, code, infrastructure, knowledge, calendar, and operator.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        {
+                            "name": "domain",
+                            "in": "path",
+                            "required": true,
+                            "schema": {
+                                "type": "string",
+                                "enum": ["home", "research", "code", "infrastructure", "knowledge", "calendar", "operator"]
+                            },
+                            "example": "operator"
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Domain descriptor",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/DomainDescriptor" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator/meta/capabilities": {
+                "get": {
+                    "operationId": "getOperatorMetaCapabilities",
+                    "summary": "Get OperatorMetaService capabilities",
+                    "description": "Returns operator-domain service capabilities and safety boundaries. Level 1 diagnoses only, Level 2 plans only, Level 3 creates draft tasks with confirmation, Level 4 repo/code/config modification is blocked for now, and Level 5 operational changes are blocked for now.",
+                    "security": [{ "BearerAuth": [] }],
+                    "responses": {
+                        "200": {
+                            "description": "Operator meta capabilities",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "additionalProperties": true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator/meta/state": {
+                "get": {
+                    "operationId": "inspectOperatorTaskState",
+                    "summary": "Inspect existing task, run, and artifact state",
+                    "description": "Read-only operator-domain inspection over existing OpTask repository state. Returns matching tasks, runs with embedded work_items JSON, and artifacts. Work items are not independently queryable rows yet; they are embedded in op_task_runs for the MVP.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        {
+                            "name": "profile_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid", "default": DEFAULT_EMPLOYMENT_PROFILE_ID }
+                        },
+                        {
+                            "name": "task_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid" }
+                        },
+                        {
+                            "name": "run_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid" }
+                        },
+                        {
+                            "name": "artifact_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid" }
+                        },
+                        {
+                            "name": "artifact_type",
+                            "in": "query",
+                            "schema": { "type": "string" },
+                            "examples": {
+                                "diagnostic": { "value": "operator_task_diagnostic" },
+                                "patchPlan": { "value": "operator_patch_plan" },
+                                "taskSet": { "value": "operator_implementation_task_set" }
+                            }
+                        },
+                        {
+                            "name": "source_url",
+                            "in": "query",
+                            "schema": { "type": "string" }
+                        },
+                        {
+                            "name": "include_content",
+                            "in": "query",
+                            "schema": { "type": "boolean", "default": false }
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+                        },
+                        {
+                            "name": "offset",
+                            "in": "query",
+                            "schema": { "type": "integer", "minimum": 0, "default": 0 }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Task state snapshot",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/OperatorTaskStateSnapshot" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/review-failed-task": {
+                "post": {
+                    "operationId": "reviewFailedTask",
+                    "summary": "Create an operator failed-task diagnostic task",
+                    "description": "Debug/admin endpoint. Safety Level 1: diagnose only. Creates an operator.review_failed_task TaskRequest and OpTask for a specific failed run. For normal chat use, prefer createTaskFromNaturalLanguage with a message like 'Review failed task run ... and suggest fixes', then runTaskRequest.",
+                    "security": [{ "BearerAuth": [] }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/OperatorReviewFailedTaskRequest" },
+                                "examples": {
+                                    "reviewRun": {
+                                        "summary": "Review a failed run",
+                                        "value": {
+                                            "run_id": "00000000-0000-0000-0000-000000000000",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "include_task": true,
+                                            "include_artifacts": true,
+                                            "include_recent_audit": true,
+                                            "include_repo_context": false,
+                                            "escalate_if_needed": false,
+                                            "source": "open_webui"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Created diagnostic task request",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/CreateTaskFromMessageResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/review-recent-tasks": {
+                "post": {
+                    "operationId": "reviewRecentTasks",
+                    "summary": "Inspect recent operator task state",
+                    "description": "Debug/admin endpoint. Safety Level 1: diagnose only. Returns recent task, run, and artifact state for operator review without executing code or changing configuration. Use this to inspect recent failures before choosing reviewFailedTask.",
+                    "security": [{ "BearerAuth": [] }],
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/OperatorReviewRecentTasksRequest" },
+                                "examples": {
+                                    "recent": {
+                                        "summary": "Inspect recent task state",
+                                        "value": {
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "include_content": false,
+                                            "limit": 25
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Recent operator task state",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/OperatorTaskStateSnapshot" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/generate-patch-plan": {
+                "post": {
+                    "operationId": "generatePatchPlan",
+                    "summary": "Create a patch-plan task from an operator diagnostic",
+                    "description": "Debug/admin endpoint. Safety Level 2: plan only. Creates an operator.generate_patch_plan TaskRequest and OpTask from an operator_task_diagnostic artifact. The task produces an operator_patch_plan artifact when run and does not edit files.",
+                    "security": [{ "BearerAuth": [] }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/OperatorGeneratePatchPlanRequest" },
+                                "examples": {
+                                    "fromDiagnostic": {
+                                        "summary": "Generate a patch plan from a diagnostic artifact",
+                                        "value": {
+                                            "artifact_id": "00000000-0000-0000-0000-000000000000",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "title": "Fix failed task workflow",
+                                            "source": "open_webui"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Created patch-plan task request",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/CreateTaskFromMessageResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/escalations": {
+                "post": {
+                    "operationId": "createEscalationRequest",
+                    "summary": "Create a ChatGPT escalation request artifact",
+                    "description": "Debug/admin endpoint. Safety Level 2: plan/escalation packet only. Creates a chatgpt_escalation_request artifact attached to an existing run. For normal use, prefer createTaskFromNaturalLanguage with an escalation request so Local Operator collects and redacts context first.",
+                    "security": [{ "BearerAuth": [] }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CreateChatGptEscalationRequestArtifact" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Created escalation request artifact",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/ChatGptEscalationArtifactResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/escalations/{artifact_id}/response": {
+                "post": {
+                    "operationId": "submitEscalationResponse",
+                    "summary": "Save a ChatGPT escalation response artifact",
+                    "description": "Debug/admin endpoint. Safety Level 2: response capture only. Saves a chatgpt_escalation_response artifact and links it back to the request artifact identified by artifact_id. Never executes recommended actions automatically.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        { "$ref": "#/components/parameters/ArtifactId" }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/SaveChatGptEscalationResponseArtifact" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Saved escalation response artifact",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/ChatGptEscalationArtifactResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/artifacts/{artifact_id}/convert-to-tasks": {
+                "post": {
+                    "operationId": "convertRecommendationToTasks",
+                    "summary": "Create an implementation task-set task from an operator artifact",
+                    "description": "Debug/admin endpoint. Safety Level 2: plan only. Creates an operator.convert_recommendation_to_tasks TaskRequest and OpTask from an operator_patch_plan artifact. The task produces an operator_implementation_task_set artifact when run; it does not execute implementation tasks automatically.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        { "$ref": "#/components/parameters/ArtifactId" }
+                    ],
+                    "requestBody": {
+                        "required": false,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/OperatorConvertRecommendationToTasksRequest" },
+                                "examples": {
+                                    "convertPatchPlan": {
+                                        "summary": "Convert a patch plan into task specs",
+                                        "value": {
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "source": "open_webui"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Created implementation task-set request",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/CreateTaskFromMessageResponse" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/api/operator-meta/diagnostics": {
+                "get": {
+                    "operationId": "showOperatorDiagnostics",
+                    "summary": "Show recent operator diagnostics",
+                    "description": "Debug/admin endpoint. Safety Level 1: diagnose only. Lists recent operator_task_diagnostic artifacts. Use this when the user asks to show operator diagnostics, failed-task reviews, or self-review output.",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        {
+                            "name": "profile_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid", "default": DEFAULT_EMPLOYMENT_PROFILE_ID }
+                        },
+                        {
+                            "name": "run_id",
+                            "in": "query",
+                            "schema": { "type": "string", "format": "uuid" }
+                        },
+                        {
+                            "name": "include_content",
+                            "in": "query",
+                            "schema": { "type": "boolean", "default": false }
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Operator diagnostics",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/ShowOperatorDiagnosticsResponse" }
                                 }
                             }
                         }
@@ -202,12 +596,15 @@ pub async fn openapi_json() -> Json<Value> {
                         {
                             "name": "artifact_type",
                             "in": "query",
-                            "description": "Use this when the user asks for a specific kind of output, such as search results or scored matches.",
+                            "description": "Use this when the user asks for a specific kind of output, such as search results, scored matches, or operator self-review artifacts.",
                             "schema": { "type": "string", "example": "search_result_set" },
                             "examples": {
                                 "searchResults": { "value": "search_result_set" },
                                 "readablePage": { "value": "readable_web_page" },
-                                "scoredMatches": { "value": "scored_opportunity_matches" }
+                                "scoredMatches": { "value": "scored_opportunity_matches" },
+                                "operatorDiagnostic": { "value": "operator_task_diagnostic" },
+                                "operatorPatchPlan": { "value": "operator_patch_plan" },
+                                "operatorImplementationTaskSet": { "value": "operator_implementation_task_set" }
                             }
                         },
                         {
@@ -763,6 +1160,74 @@ pub async fn openapi_json() -> Json<Value> {
                         }
                     }
                 },
+                "OperatorReviewFailedTaskRequest": {
+                    "type": "object",
+                    "required": ["run_id"],
+                    "properties": {
+                        "run_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Failed OpTaskRun ID to diagnose."
+                        },
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "include_task": { "type": "boolean", "default": true },
+                        "include_artifacts": { "type": "boolean", "default": true },
+                        "include_recent_audit": { "type": "boolean", "default": true },
+                        "include_repo_context": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Reserved for later code/repo inspection. Current MVP remains read-only."
+                        },
+                        "escalate_if_needed": { "type": "boolean", "default": false },
+                        "source": { "type": "string", "default": "operator_meta" }
+                    }
+                },
+                "OperatorReviewRecentTasksRequest": {
+                    "type": "object",
+                    "properties": {
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "include_content": { "type": "boolean", "default": false },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 25 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 }
+                    }
+                },
+                "OperatorGeneratePatchPlanRequest": {
+                    "type": "object",
+                    "required": ["artifact_id"],
+                    "properties": {
+                        "artifact_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "operator_task_diagnostic artifact ID."
+                        },
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "title": { "type": "string" },
+                        "source": { "type": "string", "default": "operator_meta" }
+                    }
+                },
+                "OperatorConvertRecommendationToTasksRequest": {
+                    "type": "object",
+                    "properties": {
+                        "profile_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "default": DEFAULT_EMPLOYMENT_PROFILE_ID
+                        },
+                        "source": { "type": "string", "default": "operator_meta" }
+                    }
+                },
                 "TaskRequest": {
                     "type": "object",
                     "properties": {
@@ -775,6 +1240,141 @@ pub async fn openapi_json() -> Json<Value> {
                         "op_task_id": { "type": "string", "format": "uuid", "nullable": true },
                         "run_id": { "type": "string", "format": "uuid", "nullable": true },
                         "primary_artifact_id": { "type": "string", "format": "uuid", "nullable": true }
+                    }
+                },
+                "DomainCatalogResponse": {
+                    "type": "object",
+                    "properties": {
+                        "domains": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainDescriptor" }
+                        }
+                    }
+                },
+                "DomainDescriptor": {
+                    "type": "object",
+                    "properties": {
+                        "domain": { "type": "string" },
+                        "display_name": { "type": "string" },
+                        "priority": { "type": "integer" },
+                        "description": { "type": "string" },
+                        "task_types": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainTaskType" }
+                        },
+                        "planner": { "$ref": "#/components/schemas/DomainPlanner" },
+                        "work_item_types": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "tools": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainTool" }
+                        },
+                        "artifact_types": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainArtifactType" }
+                        },
+                        "model_purposes": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainModelPurpose" }
+                        },
+                        "policy_tiers": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainPolicyTier" }
+                        },
+                        "safety_levels": {
+                            "type": "array",
+                            "description": "Domain-specific safety boundaries. The operator domain uses five explicit levels from diagnose-only through blocked operational changes.",
+                            "items": { "$ref": "#/components/schemas/DomainSafetyLevel" }
+                        },
+                        "continuation_rules": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/DomainContinuationRule" }
+                        }
+                    }
+                },
+                "DomainTaskType": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "planned", "alias", "continuation_rule"]
+                        },
+                        "description": { "type": "string" },
+                        "input_schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                },
+                "DomainPlanner": {
+                    "type": "object",
+                    "properties": {
+                        "strategy": { "type": "string" },
+                        "planner_module": { "type": "string" },
+                        "notes": { "type": "string" }
+                    }
+                },
+                "DomainTool": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "purpose": { "type": "string" },
+                        "required_now": { "type": "boolean" }
+                    }
+                },
+                "DomainArtifactType": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" }
+                    }
+                },
+                "DomainModelPurpose": {
+                    "type": "object",
+                    "properties": {
+                        "purpose": { "type": "string" },
+                        "model_route": { "type": "string" }
+                    }
+                },
+                "DomainPolicyTier": {
+                    "type": "object",
+                    "properties": {
+                        "operation": { "type": "string" },
+                        "risk_tier": {
+                            "type": "string",
+                            "enum": ["Tier0", "Tier1", "Tier2", "Tier3"]
+                        },
+                        "requires_confirmation": { "type": "boolean" }
+                    }
+                },
+                "DomainSafetyLevel": {
+                    "type": "object",
+                    "properties": {
+                        "level": { "type": "integer", "minimum": 1, "maximum": 5 },
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "allowed": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "requires_confirmation": { "type": "boolean" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "blocked_for_now", "planned"]
+                        }
+                    }
+                },
+                "DomainContinuationRule": {
+                    "type": "object",
+                    "properties": {
+                        "source_artifact_type": { "type": "string" },
+                        "continuations": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
                     }
                 },
                 "RunTaskRequest": {
@@ -835,7 +1435,12 @@ pub async fn openapi_json() -> Json<Value> {
                         "created_at": { "type": "string", "format": "date-time" },
                         "metadata": { "type": "object", "additionalProperties": true, "nullable": true },
                         "content_text": { "type": "string", "nullable": true },
-                        "content_json": { "type": "object", "additionalProperties": true, "nullable": true }
+                        "content_json": { "type": "object", "additionalProperties": true, "nullable": true },
+                        "allowed_continuations": {
+                            "type": "array",
+                            "description": "Allowed continuation actions for this artifact type.",
+                            "items": { "type": "string" }
+                        }
                     }
                 },
                 "LatestArtifactsResponse": {
@@ -880,7 +1485,7 @@ pub async fn openapi_json() -> Json<Value> {
                         "create_tasks": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Set true when the user approves creating new OpTasks from escalation recommendations. Created tasks are linked to the response artifact and are not executed automatically."
+                            "description": "Set true when the user approves creating draft OpTasks from escalation recommendations. Created tasks are linked to the response artifact, saved paused/draft, and are not executed automatically."
                         }
                     }
                 },
@@ -915,6 +1520,11 @@ pub async fn openapi_json() -> Json<Value> {
                     "properties": {
                         "ok": { "type": "boolean" },
                         "intent": { "type": "string" },
+                        "source_artifact_type": { "type": "string" },
+                        "allowed_continuations": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
                         "task_request": { "$ref": "#/components/schemas/TaskRequest" },
                         "task": { "$ref": "#/components/schemas/OpTask" },
                         "run": { "$ref": "#/components/schemas/OpTaskRunSummary" },
@@ -929,7 +1539,7 @@ pub async fn openapi_json() -> Json<Value> {
                         },
                         "created_tasks": {
                             "type": "array",
-                            "description": "Follow-up OpTasks created after explicit approval. These are linked back to the escalation response artifact and are not executed automatically.",
+                            "description": "Draft follow-up OpTasks created after explicit approval. These are linked back to the escalation response artifact, saved paused/draft, and are not executed automatically.",
                             "items": { "$ref": "#/components/schemas/OpTask" }
                         },
                         "requires_confirmation": {
@@ -1057,6 +1667,10 @@ pub async fn openapi_json() -> Json<Value> {
                                 "reader.read_url",
                                 "system.status_report",
                                 "system.escalate_to_chatgpt",
+                                "operator.escalate_to_chatgpt",
+                                "operator.review_failed_task",
+                                "operator.generate_patch_plan",
+                                "operator.convert_recommendation_to_tasks",
                                 "artifact.summarize"
                             ]
                         },
@@ -1064,7 +1678,7 @@ pub async fn openapi_json() -> Json<Value> {
                         "input_json": {
                             "type": "object",
                             "additionalProperties": true,
-                            "description": "For employment.search_opportunities: { limit?: number, create_opportunities?: boolean }. For system.escalate_to_chatgpt: { mode: 'manual' | 'openai', confirm?: boolean, user_request: string, desired_output?: string, context_text?: string, context_json?: object }."
+                            "description": "For employment.search_opportunities: { limit?: number, create_opportunities?: boolean }. For operator.review_failed_task: { run_id: uuid, include_task?: boolean, include_artifacts?: boolean, include_recent_audit?: boolean, include_repo_context?: boolean, escalate_if_needed?: boolean }. For operator.generate_patch_plan: { artifact_id: operator_task_diagnostic uuid, title?: string }. For operator.convert_recommendation_to_tasks: { artifact_id: operator_patch_plan uuid }. For operator.escalate_to_chatgpt/system.escalate_to_chatgpt: { mode: 'manual' | 'openai', confirm?: boolean, user_request: string, desired_output?: string, context_text?: string, context_json?: object }."
                         },
                         "enabled": { "type": "boolean", "default": true }
                     }
@@ -1112,6 +1726,44 @@ pub async fn openapi_json() -> Json<Value> {
                         "metadata": { "type": "object", "additionalProperties": true, "nullable": true },
                         "content_text": { "type": "string", "nullable": true },
                         "content_json": { "type": "object", "additionalProperties": true, "nullable": true }
+                    }
+                },
+                "OperatorTaskStateSnapshot": {
+                    "type": "object",
+                    "properties": {
+                        "filters": {
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "tasks": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/OpTask" }
+                        },
+                        "runs": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/OpTaskRun" }
+                        },
+                        "artifacts": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/TaskArtifact" }
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "Explains the current MVP storage detail that work items are embedded in run JSON rather than independent rows."
+                        }
+                    }
+                },
+                "ShowOperatorDiagnosticsResponse": {
+                    "type": "object",
+                    "properties": {
+                        "artifacts": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/TaskArtifact" }
+                        },
+                        "next_actions": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
                     }
                 },
                 "ArtifactContentResponse": {

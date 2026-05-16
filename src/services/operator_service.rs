@@ -168,6 +168,73 @@ impl OperatorService {
         confirm: bool,
     ) -> Result<ClassifiedTaskRequest, AppError> {
         let normalized = message.to_lowercase();
+        if is_operator_failed_task_review_request(&normalized) {
+            let run_id = extract_uuid(message).ok_or_else(|| {
+                AppError::BadRequest(
+                    "operator.review_failed_task requires a run_id UUID in the request".to_string(),
+                )
+            })?;
+            return Ok(ClassifiedTaskRequest {
+                intent: "operator.review_failed_task".to_string(),
+                task_type: "operator.review_failed_task".to_string(),
+                name: "Review Failed Task".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "run_id": run_id,
+                    "include_task": true,
+                    "include_artifacts": true,
+                    "include_recent_audit": true,
+                    "include_repo_context": false,
+                    "escalate_if_needed": normalized.contains("escalate"),
+                    "priority": "normal",
+                    "model_purpose": "failure_classification",
+                    "source": source
+                }),
+            });
+        }
+
+        if is_operator_patch_plan_request(&normalized) {
+            let artifact_id = extract_uuid(message).ok_or_else(|| {
+                AppError::BadRequest(
+                    "operator.generate_patch_plan requires an operator_task_diagnostic artifact UUID"
+                        .to_string(),
+                )
+            })?;
+            return Ok(ClassifiedTaskRequest {
+                intent: "operator.generate_patch_plan".to_string(),
+                task_type: "operator.generate_patch_plan".to_string(),
+                name: "Generate Patch Plan".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "artifact_id": artifact_id,
+                    "priority": "normal",
+                    "model_purpose": "patch_plan",
+                    "source": source
+                }),
+            });
+        }
+
+        if is_operator_convert_recommendation_request(&normalized) {
+            let artifact_id = extract_uuid(message).ok_or_else(|| {
+                AppError::BadRequest(
+                    "operator.convert_recommendation_to_tasks requires an operator_patch_plan artifact UUID"
+                        .to_string(),
+                )
+            })?;
+            return Ok(ClassifiedTaskRequest {
+                intent: "operator.convert_recommendation_to_tasks".to_string(),
+                task_type: "operator.convert_recommendation_to_tasks".to_string(),
+                name: "Create Implementation Task Set".to_string(),
+                description: Some("Created from natural-language task intake.".to_string()),
+                input_json: json!({
+                    "artifact_id": artifact_id,
+                    "priority": "normal",
+                    "model_purpose": "implementation_task_planning",
+                    "source": source
+                }),
+            });
+        }
+
         if is_chatgpt_escalation_request(&normalized) {
             let escalation_mode = if normalized.contains("openai") || normalized.contains("api") {
                 "openai"
@@ -175,9 +242,9 @@ impl OperatorService {
                 "manual"
             };
             return Ok(ClassifiedTaskRequest {
-                intent: "system.escalate_to_chatgpt".to_string(),
-                task_type: "system.escalate_to_chatgpt".to_string(),
-                name: "Manual ChatGPT Escalation".to_string(),
+                intent: "operator.escalate_to_chatgpt".to_string(),
+                task_type: "operator.escalate_to_chatgpt".to_string(),
+                name: "ChatGPT Escalation".to_string(),
                 description: Some("Created from natural-language task intake.".to_string()),
                 input_json: json!({
                     "user_request": message,
@@ -185,7 +252,7 @@ impl OperatorService {
                     "confirm": confirm,
                     "desired_output": "Return structured findings, recommendations, and next steps.",
                     "priority": "normal",
-                    "model_purpose": "manual_escalation",
+                    "model_purpose": "escalation_packet",
                     "source": source
                 }),
             });
@@ -1065,6 +1132,36 @@ fn is_chatgpt_escalation_request(normalized: &str) -> bool {
             || normalized.contains("manual"))
 }
 
+fn is_operator_failed_task_review_request(normalized: &str) -> bool {
+    normalized.contains("failed")
+        && normalized.contains("task")
+        && (normalized.contains("review")
+            || normalized.contains("diagnos")
+            || normalized.contains("inspect"))
+}
+
+fn is_operator_patch_plan_request(normalized: &str) -> bool {
+    normalized.contains("patch plan")
+        && (normalized.contains("operator") || normalized.contains("diagnostic"))
+}
+
+fn is_operator_convert_recommendation_request(normalized: &str) -> bool {
+    (normalized.contains("implementation task") || normalized.contains("task set"))
+        && (normalized.contains("patch plan") || normalized.contains("recommendation"))
+}
+
+fn extract_uuid(message: &str) -> Option<Uuid> {
+    message
+        .split(|ch: char| !(ch.is_ascii_hexdigit() || ch == '-'))
+        .find_map(|part| {
+            if part.len() == 36 {
+                Uuid::parse_str(part).ok()
+            } else {
+                None
+            }
+        })
+}
+
 fn employment_search_chat_message(
     artifact: Option<&TaskArtifact>,
     fallback_summary: Option<&str>,
@@ -1119,6 +1216,8 @@ fn employment_search_chat_message(
 mod tests {
     use super::{
         extract_employment_search_input, extract_read_url, extract_reader_search_query,
+        extract_uuid, is_operator_convert_recommendation_request,
+        is_operator_failed_task_review_request, is_operator_patch_plan_request,
         is_system_status_request,
     };
 
@@ -1153,5 +1252,31 @@ mod tests {
     fn detects_system_status_requests() {
         assert!(is_system_status_request("system status"));
         assert!(is_system_status_request("run a health check"));
+    }
+
+    #[test]
+    fn detects_operator_failed_task_review_requests() {
+        let run_id = "11111111-1111-4111-8111-111111111111";
+
+        assert!(is_operator_failed_task_review_request(&format!(
+            "review failed task {}",
+            run_id
+        )));
+        assert_eq!(
+            extract_uuid(&format!("review failed task {}", run_id))
+                .unwrap()
+                .to_string(),
+            run_id
+        );
+    }
+
+    #[test]
+    fn detects_operator_plan_loop_requests() {
+        assert!(is_operator_patch_plan_request(
+            "generate patch plan from diagnostic 11111111-1111-4111-8111-111111111111"
+        ));
+        assert!(is_operator_convert_recommendation_request(
+            "create implementation task set from patch plan 11111111-1111-4111-8111-111111111111"
+        ));
     }
 }

@@ -13,6 +13,14 @@ impl LlmRouter {
         Self { config }
     }
 
+    pub fn coder_model(&self) -> String {
+        self.config.coder_model.clone()
+    }
+
+    pub fn deep_model(&self) -> String {
+        self.config.deep_model.clone()
+    }
+
     pub fn task_summary_model(&self) -> String {
         self.config.task_summary_model.clone()
     }
