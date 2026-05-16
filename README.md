@@ -1,35 +1,37 @@
 # local-operator
 
-Local Operator is a local-first automation service for server operations, tool execution, reusable context, and job-hunt workflows.
+Local Operator is a local-first automation service for server operations, profile-scoped employment workflows, durable task artifacts, reusable context, chat memory, and Home Assistant inspection.
 
-It runs as a Rust/Axum API with SQLite persistence and a React/Vite console. The project started as a local operations layer for system, Docker, and Home Assistant inspection. It now also includes an Op Task pipeline for producing artifacts, promoting useful artifacts into saved context, and turning readable job-posting artifacts into employment opportunities.
+It runs as a Rust/Axum API with SQLite persistence and a React/Vite operator console. The API can also be used from OpenAI-compatible chat clients through `/v1/models`, `/v1/chat/completions`, and the generated OpenAPI tool document at `/openapi.json`.
 
 ## Current Status
 
 Working today:
 
-- Axum API server on the configured host and port
-- SQLite persistence and migrations
-- health and status routes
-- audit logging support
-- system, Docker, and Home Assistant tool modules
-- OpenAI-compatible chat/model routes backed by local LLM plumbing
-- Op Tasks with manual runs, run history, work items, and artifacts
-- readable URL ingestion through `reader.read_url`
-- artifact listing, detail, content, and save-to-context routes
-- saved context notes with list, create, get, and search routes
-- employment opportunities created from readable artifacts
-- opportunity parse and score routes
-- Operator Console for reviewing artifacts and opportunities
-- duplicate awareness when creating opportunities from artifacts or source URLs
+- Axum API server with SQLite migrations and persistence
+- optional bearer-token auth for protected routes
+- audit logging for tool execution
+- system, Docker, and Home Assistant read-only tool modules
+- Home Assistant overview plus normalized energy/HVAC snapshots for climate, weather, power, energy, battery, pricing, and helper entities
+- OpenAI-compatible model and chat-completion routes backed by the local LLM router
+- chat/session memory that records sessions, messages, task requests, task runs, artifacts, and follow-up artifact references
+- natural-language operator chat that can read URLs, search the web, search employment opportunities, and create task-backed artifacts
+- Op Tasks with manual runs, run history, work items, artifacts, and artifact content storage
+- URL reading through `reader.read_url` and web search through `reader.search_web`
+- profile criteria driven employment search through `employment.search_opportunities`
+- artifact listing, detail, content, and save-to-context promotion routes
+- saved context notes scoped to employment profiles, with list, create, get, and search routes
+- employment profiles with criteria, notes, and email fields
+- employment opportunities scoped to profiles, including parse, score, cover-letter, archive, reject, restore, and artifact/source duplicate awareness
+- Operator Console for chat, profile setup, tasks, artifacts, daily review, and opportunity review
 
 Still intentionally basic:
 
-- scheduling is not implemented yet
-- employment parsing and scoring are early-stage
-- context search is SQL LIKE, not embeddings
-- artifact-to-context promotion works, but the business logic should move deeper into service code as it grows
-- duplicate protection is application-level; database-level uniqueness rules can come later after existing data is reviewed
+- no scheduler yet; Op Tasks are created and run manually or from chat
+- employment parsing, scoring, and cover-letter generation depend on local LLM quality
+- context search uses SQL-style matching, not embeddings
+- duplicate protection is mostly application-level
+- Home Assistant tools are read-only; this project does not currently actuate devices
 
 ## Run
 
@@ -46,6 +48,7 @@ Default server settings:
 - database: `sqlite:///opt/local-operator/data/operator.db`
 - auth: disabled by default
 - auth token env when enabled: `OPERATOR_API_TOKEN`
+- Home Assistant URL: `http://localhost:8123`
 - Home Assistant token env: `HA_TOKEN`
 - local LLM provider: Ollama at `http://localhost:11434`
 
@@ -56,30 +59,77 @@ cd operator-console
 npm run dev
 ```
 
-The console defaults to `http://localhost:8080` as the API base and stores API base, token, artifact type filter, and status filter in browser local storage.
+The console defaults to `http://localhost:8080` as the API base and stores the API base, token, profile id, artifact filter, opportunity status filter, and fit filter in browser local storage.
 
 ## Console
 
-The Operator Console is the easiest way to use the employment workflow.
+The Operator Console is the easiest way to use the current workflow.
 
-Current console workflows:
+Current console areas:
 
-- read a job URL into a readable artifact
-- read a job URL and create an employment opportunity
-- review artifacts with tabs for readable text, raw JSON, and source metadata
-- review opportunities with summary, parsed fields, raw JSON, and source artifact tabs
-- create, parse, and score opportunities from artifacts
-- open source URLs and source artifacts
-- filter opportunities by status presets
-- filter artifacts by artifact type presets
-- view a "Today's Work" dashboard
-- warn before reusing an artifact or source URL that already has an opportunity
+- Operator chat for task-backed requests
+- profile panel for selecting or editing an employment profile
+- Daily Review for scanning active opportunity queues
+- Tasks for creating and running profile-scoped Op Tasks
+- Employment for reviewing, parsing, scoring, rejecting, archiving, restoring, and generating cover letters
+- Artifacts for reviewing readable pages, search result sets, and other saved task outputs
+
+## Profiles
+
+Employment data is profile-scoped. The default profile id is:
+
+```text
+00000000-0000-0000-0000-000000000001
+```
+
+Legacy routes such as `/api/context`, `/api/op-tasks`, and `/api/employment/opportunities` still work by using the default profile. New clients should prefer the profile-scoped routes under:
+
+```text
+/api/employment/profiles/:profile_id/...
+```
+
+Profile criteria are used by employment search tasks and chat requests such as "search for jobs using my profile criteria and create opportunities".
+
+## OpenAI-Compatible Chat
+
+Local Operator exposes a minimal OpenAI-compatible surface:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+
+The built-in model id is:
+
+```text
+local-operator-home
+```
+
+For `local-operator-home`, chat requests are routed through Local Operator instead of directly to an LLM. The route can:
+
+- create URL-reading tasks when the user asks to read a URL
+- create web-search tasks for search requests
+- create employment-search tasks from profile criteria
+- save task request, run, and artifact ids into session memory
+- answer artifact follow-ups using the last artifact from the session
+
+The chat completion request accepts OpenAI-style `messages` and also supports:
+
+- `session_id`
+- `profile_id`
+- `metadata.session_id`
+- `metadata.profile_id`
+- `metadata.conversation_id`
+- `metadata.thread_id`
+
+If no session id is supplied, the API creates or resolves a session from the external conversation id or `user` value.
 
 ## Main API Routes
 
-Health:
+Public:
 
 - `GET /health`
+- `GET /openapi.json`
+- `GET /api/tools`
+- `GET /api/tools/openapi.json`
 
 Status and operator:
 
@@ -94,44 +144,127 @@ OpenAI compatibility:
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 
-Context:
+Employment profiles:
+
+- `GET /api/employment/profiles`
+- `POST /api/employment/profiles`
+- `GET /api/employment/profiles/:profile_id`
+- `PUT /api/employment/profiles/:profile_id`
+
+Profile-scoped context:
+
+- `GET /api/employment/profiles/:profile_id/context`
+- `POST /api/employment/profiles/:profile_id/context`
+- `GET /api/employment/profiles/:profile_id/context/search?q=...`
+
+Default-profile context:
 
 - `GET /api/context`
 - `POST /api/context`
 - `GET /api/context/search?q=...`
 - `GET /api/context/:id`
 
-Op Tasks:
+Profile-scoped Op Tasks:
 
-- `POST /api/op-tasks`
+- `GET /api/employment/profiles/:profile_id/op-tasks`
+- `POST /api/employment/profiles/:profile_id/op-tasks`
+- `POST /api/employment/profiles/:profile_id/op-tasks/:id/run`
+- `GET /api/employment/profiles/:profile_id/op-tasks/:id/runs`
+- `GET /api/employment/profiles/:profile_id/op-task-artifacts`
+- `GET /api/employment/profiles/:profile_id/op-task-artifacts/:id`
+- `GET /api/employment/profiles/:profile_id/op-task-artifacts/:id/content`
+- `POST /api/employment/profiles/:profile_id/op-task-artifacts/:id/save-context`
+
+Default-profile Op Tasks:
+
 - `GET /api/op-tasks`
+- `POST /api/op-tasks`
 - `GET /api/op-tasks/:id`
 - `POST /api/op-tasks/:id/run`
 - `GET /api/op-tasks/:id/runs`
 - `GET /api/op-task-runs/:id`
-
-Artifacts:
-
 - `GET /api/op-task-artifacts`
 - `GET /api/op-task-artifacts/:id`
 - `GET /api/op-task-artifacts/:id/content`
 - `POST /api/op-task-artifacts/:id/save-context`
 
-Employment:
+Profile-scoped employment opportunities:
+
+- `GET /api/employment/profiles/:profile_id/opportunities`
+- `POST /api/employment/profiles/:profile_id/opportunities`
+- `GET /api/employment/profiles/:profile_id/opportunities/:id`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/parse`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/score`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/cover-letter`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/archive`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/reject`
+- `POST /api/employment/profiles/:profile_id/opportunities/:id/restore`
+- `POST /api/employment/profiles/:profile_id/opportunities/from-artifact/:artifact_id`
+
+Default-profile employment opportunities:
 
 - `GET /api/employment/opportunities`
 - `POST /api/employment/opportunities`
 - `GET /api/employment/opportunities/:id`
 - `POST /api/employment/opportunities/:id/parse`
 - `POST /api/employment/opportunities/:id/score`
+- `POST /api/employment/opportunities/:id/archive`
+- `POST /api/employment/opportunities/:id/reject`
+- `POST /api/employment/opportunities/:id/restore`
 - `POST /api/employment/opportunities/from-artifact/:artifact_id`
 
-## Op Task Example
+## Registered Tools
 
-Create a reader task:
+Tools are executed through:
+
+```text
+POST /api/tools/execute
+```
+
+Current registered tools with the default config:
+
+- `system.get_status`
+- `docker.list_containers`
+- `ha.get_summary`
+- `ha.get_states`
+- `ha.get_entity`
+- `ha.search_entities`
+- `ha.get_overview`
+- `ha.get_energy_hvac_snapshot`
+
+Docker and Home Assistant tools are only registered when their config blocks are enabled.
+
+All current Home Assistant tools are read-only. `ha.get_overview` returns a compact house summary for people, mode, locks, doors, vacuums, weather, media players, energy devices, and problem entities. `ha.get_energy_hvac_snapshot` returns a normalized planning snapshot for climate, temperature, humidity, weather, power, energy, battery, energy price, and helper entities.
+
+Example:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/op-tasks \
+curl -i -X POST http://localhost:8080/api/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "ha.get_energy_hvac_snapshot",
+    "args": {},
+    "confirm": false
+  }'
+```
+
+## Safety Model
+
+Tool execution goes through a policy engine:
+
+- Tier 0: read-only actions, allowed automatically
+- Tier 1: low-risk write actions, confirmation or config opt-in required
+- Tier 2: higher-risk actions, confirmation or config opt-in required
+- Tier 3: blocked by default
+
+The tools currently registered by the default config are Tier 0. The policy model exists so future write-capable tools can be added without bypassing confirmation checks.
+
+## Op Task Examples
+
+Create a profile-scoped URL reader task:
+
+```bash
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-tasks \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Read Job URL",
@@ -147,27 +280,44 @@ curl -i -X POST http://localhost:8080/api/op-tasks \
 Run it:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/op-tasks/<TASK_ID>/run
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-tasks/<TASK_ID>/run
 ```
 
-List readable artifacts without full content:
+Create a profile-scoped employment search task:
 
 ```bash
-curl -i "http://localhost:8080/api/op-task-artifacts?artifact_type=readable_web_page&limit=20"
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Search Opportunities",
+    "task_type": "employment.search_opportunities",
+    "description": "Search from the profile criteria.",
+    "input_json": {
+      "limit": 10,
+      "create_opportunities": true
+    },
+    "enabled": true
+  }'
+```
+
+List profile artifacts without full content:
+
+```bash
+curl -i "http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-task-artifacts?artifact_type=search_result_set&limit=20"
 ```
 
 Load artifact content separately:
 
 ```bash
-curl -i http://localhost:8080/api/op-task-artifacts/<ARTIFACT_ID>/content
+curl -i http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-task-artifacts/<ARTIFACT_ID>/content
 ```
 
 ## Context Example
 
-Create a reusable context note manually:
+Create a reusable context note for a profile:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/context \
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/context \
   -H "Content-Type: application/json" \
   -d '{
     "kind": "career_profile",
@@ -177,16 +327,16 @@ curl -i -X POST http://localhost:8080/api/context \
   }'
 ```
 
-Search context:
+Search profile context:
 
 ```bash
-curl -i "http://localhost:8080/api/context/search?q=Salesforce"
+curl -i "http://localhost:8080/api/employment/profiles/<PROFILE_ID>/context/search?q=Salesforce"
 ```
 
-Promote an artifact into saved context:
+Promote an artifact into profile context:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/op-task-artifacts/<ARTIFACT_ID>/save-context \
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/op-task-artifacts/<ARTIFACT_ID>/save-context \
   -H "Content-Type: application/json" \
   -d '{
     "kind": "document_note",
@@ -196,87 +346,150 @@ curl -i -X POST http://localhost:8080/api/op-task-artifacts/<ARTIFACT_ID>/save-c
   }'
 ```
 
-## Employment Example
+Valid `body_source` values are `content_text`, `content_json`, and `metadata`.
+
+## Employment Examples
 
 Create an opportunity from a readable artifact:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/employment/opportunities/from-artifact/<ARTIFACT_ID>
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/from-artifact/<ARTIFACT_ID>
 ```
 
 Parse it:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/employment/opportunities/<OPPORTUNITY_ID>/parse
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/parse
 ```
 
 Score it:
 
 ```bash
-curl -i -X POST http://localhost:8080/api/employment/opportunities/<OPPORTUNITY_ID>/score
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/score
+```
+
+Generate a cover letter:
+
+```bash
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/cover-letter \
+  -H "Content-Type: application/json" \
+  -d '{
+    "direction": "Concise, specific, and tailored to the role."
+  }'
+```
+
+Archive, reject, or restore an opportunity:
+
+```bash
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/archive \
+  -H "Content-Type: application/json" \
+  -d '{ "reason": "Not a fit right now" }'
+
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/reject \
+  -H "Content-Type: application/json" \
+  -d '{ "reason": "Too much on-site work" }'
+
+curl -i -X POST http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities/<OPPORTUNITY_ID>/restore \
+  -H "Content-Type: application/json" \
+  -d '{ "reason": "Review again" }'
 ```
 
 Find possible duplicates:
 
 ```bash
-curl -i "http://localhost:8080/api/employment/opportunities?source_artifact_id=<ARTIFACT_ID>"
-curl -i "http://localhost:8080/api/employment/opportunities?source_url=https%3A%2F%2Fexample.com"
+curl -i "http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities?source_artifact_id=<ARTIFACT_ID>"
+curl -i "http://localhost:8080/api/employment/profiles/<PROFILE_ID>/opportunities?source_url=https%3A%2F%2Fexample.com"
 ```
 
-`from-artifact` is idempotent at the service layer. If an opportunity already exists for the artifact id or source URL, the existing opportunity is returned instead of silently creating a duplicate.
+`from-artifact` is idempotent at the service layer. If an opportunity already exists for the artifact id or source URL in the profile, the existing opportunity is returned instead of silently creating a duplicate.
+
+## Operator Chat Examples
+
+Ask Local Operator to read a URL:
+
+```bash
+curl -i -X POST http://localhost:8080/api/operator/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Read https://example.com/jobs/123",
+    "include_home": false,
+    "profile_id": "00000000-0000-0000-0000-000000000001"
+  }'
+```
+
+Search from profile criteria and create opportunities:
+
+```bash
+curl -i -X POST http://localhost:8080/api/operator/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Search for jobs using my profile criteria and create opportunities for the best matches",
+    "include_home": false,
+    "profile_id": "00000000-0000-0000-0000-000000000001"
+  }'
+```
+
+OpenAI-compatible call using session memory:
+
+```bash
+curl -i -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "local-operator-home",
+    "user": "open-webui-thread-1",
+    "metadata": {
+      "profile_id": "00000000-0000-0000-0000-000000000001"
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": "Search for remote Salesforce architect jobs using my profile criteria and create opportunities"
+      }
+    ]
+  }'
+```
 
 ## Architecture
 
-Important areas:
-
-- `src/routes/`: HTTP route handlers and request/response models
-- `src/op_tasks/`: saved tasks, manual runs, work items, artifacts, and runners
-- `src/readers/`: URL reading and readable text extraction
-- `src/context/`: saved reusable knowledge
-- `src/domains/employment/`: job opportunity models, repository, and service logic
-- `src/tools/`: system, Docker, Home Assistant, and tool registry
-- `src/services/`: operator orchestration, audit, policy, LLM routing, and planning
-- `src/db/`: database and audit repository support
-- `src/adapters/`: external integration clients
-- `operator-console/`: React/Vite browser console
-
-## Safety Model
-
-Actions are grouped by risk tier:
-
-- Tier 0: read-only, safe to run automatically
-- Tier 1: low-risk write actions
-- Tier 2: confirmation-required actions
-- Tier 3: blocked in v0.1
-
-Examples of blocked v0.1 actions:
-
-- unlocking doors
-- opening garage doors
-- disarming alarms
-- arbitrary shell execution
-
-## Development Checks
-
-Backend:
+Development checks:
 
 ```bash
 cargo fmt
 cargo check
 ```
 
-Console:
+Console checks:
 
 ```bash
 cd operator-console
 npm run build
 ```
 
-## Near-Term Roadmap
+Important areas:
 
-- move artifact-to-context promotion logic out of the route handler
-- add richer employment domain models for applications and application packets
-- improve job parsing and scoring with saved context
-- add scheduling only after manual Op Task runs are boring and reliable
-- add stronger duplicate handling after reviewing existing opportunity data
-- add deeper artifact search over `content_text`
+- `src/routes/`: HTTP route handlers and request/response models
+- `src/routes/openapi.rs`: generated OpenAPI tool document for chat clients
+- `src/routes/openai_compat.rs`: OpenAI-compatible chat/model API and session resolution
+- `src/op_tasks/`: saved tasks, manual runs, work items, artifacts, and runners
+- `src/readers/`: URL reading, readable text extraction, and web search
+- `src/context/`: saved reusable knowledge scoped by profile
+- `src/domains/employment/`: profiles, opportunities, scoring, cover letters, and employment context
+- `src/session_memory.rs`: chat sessions, messages, task requests, and task links
+- `src/tools/`: system, Docker, Home Assistant, and tool registry
+- `src/services/`: operator orchestration, audit, policy, LLM routing, and planning
+- `src/db/`: database and audit repository support
+- `src/adapters/`: external integration clients
+
+## Data Model Notes
+
+The current migrations create tables for:
+
+- Op Tasks, Op Task runs, work items, artifacts, and artifact content
+- saved context notes
+- employment opportunities and source-artifact indexes
+- employment profiles and criteria
+- employment scoring output fields
+- task requests and task links
+- chat sessions and chat messages
+
+This makes task output durable: chat-created searches, URL reads, opportunity records, context promotions, and follow-up artifact references survive process restarts.

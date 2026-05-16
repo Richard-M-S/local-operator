@@ -173,6 +173,10 @@ pub fn router(state: AppState) -> Router {
             "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
             "http://192.168.0.100:5173".parse::<HeaderValue>().unwrap(),
             "http://100.71.130.87:5173".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
+            "http://192.168.0.100:3000".parse::<HeaderValue>().unwrap(),
+            "http://100.71.130.87:3000".parse::<HeaderValue>().unwrap(),
         ])
         .allow_methods([
             Method::GET,
@@ -186,6 +190,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/openapi.json", get(openapi::openapi_json))
+        .route("/api/tools", get(openapi::openapi_json))
+        .route("/api/tools/", get(openapi::openapi_json))
         .route("/api/tools/openapi.json", get(openapi::openapi_json))
         .merge(protected_routes)
         .with_state(state)
