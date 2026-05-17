@@ -277,3 +277,149 @@ fn operator_source_artifact_id(task: &OpTask) -> serde_json::Value {
         .cloned()
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LlmRouterConfig;
+    use crate::op_tasks::models::{OpTask, OpTaskStatus};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn planner() -> OperatorTaskPlanner {
+        let router = LlmRouter::new(LlmRouterConfig {
+            fast_model: "fast-test".to_string(),
+            default_model: "default-test".to_string(),
+            coder_model: "coder-test".to_string(),
+            deep_model: "deep-test".to_string(),
+            task_summary_model: "summary-test".to_string(),
+            task_extraction_model: "extract-test".to_string(),
+            task_reasoning_model: "reasoning-test".to_string(),
+            task_writing_model: "writing-test".to_string(),
+        });
+
+        OperatorTaskPlanner::new(router)
+    }
+
+    fn task(task_type: &str) -> OpTask {
+        OpTask {
+            id: Uuid::new_v4(),
+            profile_id: Uuid::new_v4(),
+            task_type: task_type.to_string(),
+            name: "operator test task".to_string(),
+            description: None,
+            input_json: json!({ "artifact_id": Uuid::new_v4() }),
+            status: OpTaskStatus::Active,
+            created_at: Utc::now(),
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn operator_review_failed_task_plan_is_ordered_and_populated() {
+        let planner = planner();
+        let run_id = Uuid::new_v4();
+        let plan = planner
+            .plan(&task("operator.review_failed_task"), run_id)
+            .expect("planner result");
+
+        let names: Vec<_> = plan.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "load_failed_run",
+                "load_task_definition",
+                "load_run_artifacts",
+                "load_recent_audit",
+                "classify_failure",
+                "analyze_root_cause",
+                "save_diagnostic_artifact",
+                "summarize_operator_review",
+            ]
+        );
+
+        assert!(plan.iter().all(|item| !item.step_type.is_empty()));
+        assert!(plan[4].model_name.is_some());
+        assert!(plan[5].model_name.is_some());
+        assert!(plan[7].model_name.is_some());
+        assert_eq!(plan[4].run_id, run_id);
+        assert_eq!(plan[0].order, 1);
+        assert_eq!(plan[7].order, 8);
+        assert_eq!(plan[4].run_id, run_id);
+    }
+
+    #[test]
+    fn operator_generate_patch_plan_plan_has_planner_boundaries_and_models() {
+        let planner = planner();
+        let run_id = Uuid::new_v4();
+        let plan = planner
+            .plan(&task("operator.generate_patch_plan"), run_id)
+            .expect("planner result");
+
+        let names: Vec<_> = plan.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "load_diagnostic_artifact",
+                "build_patch_plan",
+                "save_patch_plan_artifact",
+                "summarize_patch_plan",
+            ]
+        );
+
+        assert!(plan[0].tool_args_json.is_some());
+        assert!(plan[1].model_purpose.as_deref() == Some("patch_plan"));
+        assert!(plan[1].model_name.is_some());
+        assert!(plan[3].model_name.is_some());
+    }
+
+    #[test]
+    fn operator_convert_recommendation_to_tasks_plan_targets_implementation_tasks() {
+        let planner = planner();
+        let run_id = Uuid::new_v4();
+        let plan = planner
+            .plan(&task("operator.convert_recommendation_to_tasks"), run_id)
+            .expect("planner result");
+
+        let names: Vec<_> = plan.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "load_patch_plan_artifact",
+                "build_implementation_task_set",
+                "save_implementation_task_set_artifact",
+                "summarize_implementation_task_set",
+            ]
+        );
+        assert!(plan[1].model_purpose.as_deref() == Some("implementation_task_planning"));
+    }
+
+    #[test]
+    fn operator_escalation_plan_uses_context_and_redaction_steps() {
+        let planner = planner();
+        let run_id = Uuid::new_v4();
+        let mut task = task("operator.escalate_to_chatgpt");
+        task.input_json = json!({ "mode": "manual" });
+
+        let plan = planner.plan(&task, run_id).expect("planner result");
+
+        let names: Vec<_> = plan.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "collect_escalation_context",
+                "redact_escalation_context",
+                "save_escalation_request"
+            ]
+        );
+        assert!(plan[1].model_name.is_some());
+    }
+
+    #[test]
+    fn operator_plan_returns_none_for_unknown_task_type() {
+        let planner = planner();
+        assert!(planner
+            .plan(&task("operator.unknown"), Uuid::new_v4())
+            .is_none());
+    }
+}

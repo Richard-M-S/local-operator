@@ -251,7 +251,10 @@ impl OperatorMetaService {
                 "missing required",
                 "failed to parse",
                 "input_json",
+                "invalid_json",
                 "bad request",
+                "missing field",
+                "missing payload",
                 "has no json content",
                 "missing source url",
             ],
@@ -301,7 +304,8 @@ impl OperatorMetaService {
                 "missing context",
                 "no saved context",
                 "profile criteria",
-                "criteria",
+                "criteria missing",
+                "missing profile",
             ],
         ) {
             OperatorFailureClassification::MissingContext
@@ -813,7 +817,7 @@ fn review_context_json(context: &FailedTaskReviewContext) -> Value {
 fn next_actions_for_failure(escalate_if_needed: bool) -> Vec<String> {
     let mut actions = vec![
         "generate_patch_plan".to_string(),
-        "create_followup_tasks".to_string(),
+        "convert_recommendation_to_tasks".to_string(),
     ];
     if escalate_if_needed {
         actions.insert(1, "escalate_to_chatgpt".to_string());
@@ -1061,18 +1065,27 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::op_tasks::models::{OpTaskRunStatus, OpWorkItem};
+    use crate::op_tasks::models::{OpTask, OpTaskRunStatus, OpWorkItem};
 
-    #[tokio::test]
-    async fn classifies_policy_denied_failure() {
-        let service = OperatorMetaService::new(
+    fn service() -> OperatorMetaService {
+        OperatorMetaService::new(
             OpTaskRepository::new(sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap()),
             AuditService::new(sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap()),
-        );
+        )
+    }
+
+    fn failure_context(
+        summary: impl Into<String>,
+        work_items: Vec<OpWorkItem>,
+        task: Option<OpTask>,
+    ) -> FailedTaskReviewContext {
         let run_id = Uuid::new_v4();
-        let task_id = Uuid::new_v4();
-        let context = FailedTaskReviewContext {
-            task: None,
+        let task_id = task
+            .as_ref()
+            .map(|task| task.id)
+            .unwrap_or_else(Uuid::new_v4);
+        FailedTaskReviewContext {
+            task,
             run: OpTaskRun {
                 id: run_id,
                 profile_id: Uuid::new_v4(),
@@ -1080,14 +1093,9 @@ mod tests {
                 status: OpTaskRunStatus::Failed,
                 started_at: None,
                 completed_at: None,
-                work_items: vec![{
-                    let mut item = OpWorkItem::planned(run_id, "policy", "policy", "policy", 1);
-                    item.error =
-                        Some("policy denied: tier 2 action requires confirmation".to_string());
-                    item
-                }],
+                work_items,
                 artifacts: vec![],
-                summary: Some("policy denied".to_string()),
+                summary: Some(summary.into()),
             },
             artifacts: vec![],
             audit_entries: vec![],
@@ -1099,11 +1107,166 @@ mod tests {
                 include_repo_context: false,
                 escalate_if_needed: false,
             },
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn classifies_policy_denied_failure() {
+        let run_id = Uuid::new_v4();
+        let mut item = OpWorkItem::planned(run_id, "policy", "policy", "policy", 1);
+        item.error = Some("policy denied: tier 2 action requires confirmation".to_string());
 
         assert_eq!(
-            service.classify_failure(&context),
+            service().classify_failure(&failure_context("policy denied", vec![item], None,)),
             OperatorFailureClassification::PolicyDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn classifies_model_error_for_model_step_failures() {
+        let run_id = Uuid::new_v4();
+        let mut item = OpWorkItem::planned(run_id, "summarize", "summary", "model", 1);
+        item.error = Some("model parse failed on JSON response payload".to_string());
+
+        let result =
+            service().classify_failure(&failure_context("model parse failed", vec![item], None));
+
+        assert_eq!(result, OperatorFailureClassification::ModelError);
+    }
+
+    #[tokio::test]
+    async fn classifies_tool_error_from_tool_step_failures() {
+        let run_id = Uuid::new_v4();
+        let mut item = OpWorkItem::planned(run_id, "reader.search_web", "search", "tool", 1);
+        item.error = Some("tool not found in registry".to_string());
+
+        let result = service().classify_failure(&failure_context(
+            "reader search invocation failed",
+            vec![item],
+            Some(OpTask {
+                id: Uuid::new_v4(),
+                profile_id: Uuid::new_v4(),
+                task_type: "reader.search_web".to_string(),
+                name: "reader search".to_string(),
+                description: None,
+                input_json: json!({ "query": "jobs" }),
+                status: OpTaskStatus::Active,
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        ));
+
+        assert_eq!(result, OperatorFailureClassification::ToolError);
+    }
+
+    #[tokio::test]
+    async fn classifies_bad_task_input_when_payload_is_invalid() {
+        let result = service().classify_failure(&failure_context(
+            "input_json is missing required field query and user input was malformed",
+            vec![],
+            Some(OpTask {
+                id: Uuid::new_v4(),
+                profile_id: Uuid::new_v4(),
+                task_type: "reader.search_web".to_string(),
+                name: "reader search".to_string(),
+                description: None,
+                input_json: json!({}),
+                status: OpTaskStatus::Active,
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        ));
+
+        assert_eq!(result, OperatorFailureClassification::BadTaskInput);
+    }
+
+    #[tokio::test]
+    async fn classifies_missing_context_when_profile_context_is_missing() {
+        let result = service().classify_failure(&failure_context(
+            "failed because no saved context or profile criteria was found",
+            vec![],
+            Some(OpTask {
+                id: Uuid::new_v4(),
+                profile_id: Uuid::new_v4(),
+                task_type: "employment.search_opportunities".to_string(),
+                name: "employment search".to_string(),
+                description: None,
+                input_json: json!({"user_request":"salesforce"}),
+                status: OpTaskStatus::Active,
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        ));
+
+        assert_eq!(result, OperatorFailureClassification::MissingContext);
+    }
+
+    #[tokio::test]
+    async fn classifies_bad_search_results_when_summary_mentions_weak_matches() {
+        let result = service().classify_failure(&failure_context(
+            "search results were weak and generic, not location specific",
+            vec![],
+            Some(OpTask {
+                id: Uuid::new_v4(),
+                profile_id: Uuid::new_v4(),
+                task_type: "employment.search_opportunities".to_string(),
+                name: "employment search".to_string(),
+                description: None,
+                input_json: json!({"user_request":"salesforce architect"}),
+                status: OpTaskStatus::Active,
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        ));
+
+        assert_eq!(result, OperatorFailureClassification::BadSearchResults);
+    }
+
+    #[tokio::test]
+    async fn classifies_unknown_when_no_rule_matches() {
+        let result = service().classify_failure(&failure_context(
+            "an unusual edge case happened",
+            vec![],
+            Some(OpTask {
+                id: Uuid::new_v4(),
+                profile_id: Uuid::new_v4(),
+                task_type: "system.status_report".to_string(),
+                name: "system status".to_string(),
+                description: None,
+                input_json: json!({}),
+                status: OpTaskStatus::Active,
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        ));
+
+        assert_eq!(result, OperatorFailureClassification::Unknown);
+    }
+
+    #[test]
+    fn next_actions_include_convert_task_and_optional_escalation() {
+        assert_eq!(
+            next_actions_for_failure(false),
+            vec![
+                "generate_patch_plan",
+                "convert_recommendation_to_tasks",
+                "escalate_to_chatgpt"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            next_actions_for_failure(true),
+            vec![
+                "generate_patch_plan",
+                "escalate_to_chatgpt",
+                "convert_recommendation_to_tasks"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
         );
     }
 }

@@ -1,5 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
+    http::header::HeaderValue,
+    http::HeaderMap,
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -13,6 +15,9 @@ use crate::{
     error::AppError,
     models::session::{TaskLink, TaskRequest},
     op_tasks::models::{ArtifactSearch, OpTask, OpTaskRunStatus, TaskArtifact},
+    services::escalation_safety::{
+        ensure_no_escalation_secret, redact_request_for_escalation, EscalationPrivacyClass,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +75,8 @@ pub struct ContinueArtifactRequest {
     pub confirm: bool,
     #[serde(default)]
     pub create_tasks: bool,
+    #[serde(default = "default_true")]
+    pub run_immediately: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,7 +87,7 @@ pub struct ContinueArtifactResponse {
     pub allowed_continuations: Vec<String>,
     pub task_request: TaskRequest,
     pub task: OpTask,
-    pub run: OpTaskRunSummary,
+    pub run: Option<OpTaskRunSummary>,
     pub artifacts: Vec<TaskRunArtifactSummary>,
     pub recommended_actions: Vec<RecommendedEscalationAction>,
     pub created_tasks: Vec<OpTask>,
@@ -102,6 +109,23 @@ pub struct OpTaskRunSummary {
     pub id: Uuid,
     pub status: OpTaskRunStatus,
     pub summary: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn add_deprecated_alias_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("deprecation", HeaderValue::from_static("true"));
+    headers.insert(
+        "warning",
+        HeaderValue::from_static(
+            "299 - \"Deprecated endpoint. Use /api/artifacts/chatgpt-escalation-requests \
+             or /api/artifacts/:artifact_id/chatgpt-escalation-response instead.\"",
+        ),
+    );
+    headers
 }
 
 #[derive(Debug, Serialize)]
@@ -149,22 +173,6 @@ pub struct SaveChatGptEscalationResponse {
 pub struct ChatGptEscalationArtifactResponse {
     pub artifact: TaskArtifact,
     pub linked_request_artifact_id: Option<Uuid>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum EscalationArtifactPrivacyClass {
-    TechnicalOnly,
-    Personal,
-    Employment,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct EscalationArtifactPolicyDecision {
-    allowed: bool,
-    requires_confirmation: bool,
-    privacy_classification: EscalationArtifactPrivacyClass,
-    reason: String,
 }
 
 pub async fn latest(
@@ -305,6 +313,7 @@ pub async fn continue_from_artifact(
         vec![]
     };
     let follow_up_creation_approved = req.confirm || req.create_tasks;
+    let run_immediately = req.run_immediately;
 
     let continuation = build_artifact_continuation(&artifact, message, source)?;
     let task = state
@@ -321,7 +330,11 @@ pub async fn continue_from_artifact(
 
     let mut task_request = TaskRequest::new(profile_id, source.to_string(), message.to_string());
     task_request.intent = Some(continuation.intent.clone());
-    task_request.status = "running".to_string();
+    task_request.status = if run_immediately {
+        "running".to_string()
+    } else {
+        "created".to_string()
+    };
     task_request.op_task_id = Some(task.id);
     let task_request = state
         .session_memory
@@ -339,57 +352,79 @@ pub async fn continue_from_artifact(
     .await?;
     create_task_link(&state, task_request.id, "op_task", task.id, "created_task").await?;
 
-    let run = match state.op_tasks.run_task(task.id).await {
-        Ok(run) => run,
-        Err(err) => {
-            state
-                .session_memory
-                .update_task_request(task_request.id, "failed", Some(task.id), None, None)
-                .await
-                .map_err(|update_err| AppError::Internal(update_err.to_string()))?;
-            return Err(err);
-        }
-    };
+    let mut run_opt = None;
+    let mut run_summary = None;
+    let mut artifacts = Vec::new();
+    let request_status = if run_immediately {
+        let run = match state.op_tasks.run_task(task.id).await {
+            Ok(run) => run,
+            Err(err) => {
+                state
+                    .session_memory
+                    .update_task_request(task_request.id, "failed", Some(task.id), None, None)
+                    .await
+                    .map_err(|update_err| AppError::Internal(update_err.to_string()))?;
+                return Err(err);
+            }
+        };
+        run_opt = Some(run.clone());
+        artifacts = run
+            .artifacts
+            .iter()
+            .map(TaskRunArtifactSummary::from)
+            .collect::<Vec<_>>();
+        run_summary = Some(OpTaskRunSummary {
+            id: run.id,
+            status: run.status,
+            summary: run.summary.clone(),
+        });
 
-    let artifact_id = run.artifacts.first().map(|artifact| artifact.id);
-    let request_status = if matches!(run.status, OpTaskRunStatus::Succeeded) {
-        "succeeded"
-    } else {
-        "failed"
-    };
-    state
-        .session_memory
-        .update_task_request(
-            task_request.id,
-            request_status,
-            Some(task.id),
-            Some(run.id),
-            artifact_id,
-        )
-        .await
-        .map_err(|err| AppError::Internal(err.to_string()))?;
-    let mut task_request = task_request;
-    task_request.status = request_status.to_string();
-    task_request.run_id = Some(run.id);
-    task_request.primary_artifact_id = artifact_id;
+        let artifact_id = run.artifacts.first().map(|artifact| artifact.id);
+        let request_status = if matches!(run.status, OpTaskRunStatus::Succeeded) {
+            "succeeded"
+        } else {
+            "failed"
+        };
 
-    create_task_link(
-        &state,
-        task_request.id,
-        "op_task_run",
-        run.id,
-        "produced_run",
-    )
-    .await?;
-    for artifact in &run.artifacts {
+        state
+            .session_memory
+            .update_task_request(
+                task_request.id,
+                request_status,
+                Some(task.id),
+                Some(run.id),
+                artifact_id,
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         create_task_link(
             &state,
             task_request.id,
-            "task_artifact",
-            artifact.id,
-            "produced_artifact",
+            "op_task_run",
+            run.id,
+            "produced_run",
         )
         .await?;
+        for artifact in &run.artifacts {
+            create_task_link(
+                &state,
+                task_request.id,
+                "task_artifact",
+                artifact.id,
+                "produced_artifact",
+            )
+            .await?;
+        }
+        request_status
+    } else {
+        "created"
+    };
+
+    let mut task_request = task_request;
+    task_request.status = request_status.to_string();
+    if let Some(run) = run_opt.as_ref() {
+        task_request.run_id = Some(run.id);
+        task_request.primary_artifact_id = run.artifacts.first().map(|artifact| artifact.id);
     }
 
     let created_tasks = if is_escalation_response && follow_up_creation_approved {
@@ -399,39 +434,44 @@ pub async fn continue_from_artifact(
         vec![]
     };
 
-    let artifacts = run
-        .artifacts
-        .iter()
-        .map(TaskRunArtifactSummary::from)
-        .collect::<Vec<_>>();
-    let next_suggested_action = if let Some(first_artifact) = run.artifacts.first() {
-        json_path_action(
-            "show_artifact",
-            "GET",
-            format!(
-                "/api/employment/profiles/{}/op-task-artifacts/{}/content",
-                profile_id, first_artifact.id
-            ),
-            Some(first_artifact.id),
-            None,
-        )
-    } else {
-        json_path_action(
-            "inspect_run",
-            "GET",
-            format!("/api/op-task-runs/{}", run.id),
-            None,
-            Some(run.id),
-        )
-    };
-    let run_summary = OpTaskRunSummary {
-        id: run.id,
-        status: run.status,
-        summary: run.summary.clone(),
-    };
+    let next_suggested_action =
+        if let Some(first_artifact) = run_opt.as_ref().and_then(|run| run.artifacts.first()) {
+            json_path_action(
+                "show_artifact",
+                "GET",
+                format!(
+                    "/api/employment/profiles/{}/op-task-artifacts/{}/content",
+                    profile_id, first_artifact.id
+                ),
+                Some(first_artifact.id),
+                None,
+            )
+        } else if !run_immediately {
+            json_path_action(
+                "run_task_request",
+                "POST",
+                format!("/api/task-requests/{}/run", task_request.id),
+                Some(task_request.id),
+                None,
+            )
+        } else {
+            json_path_action(
+                "inspect_run",
+                "GET",
+                format!("/api/op-task-runs/{}", task.id),
+                None,
+                Some(task.id),
+            )
+        };
     let requires_confirmation =
         is_escalation_response && !recommended_actions.is_empty() && !follow_up_creation_approved;
-    let next_actions = if is_escalation_response && requires_confirmation {
+    let next_actions = if !run_immediately {
+        vec![
+            "run_task_request".to_string(),
+            "show_latest_artifacts".to_string(),
+            "continue_from_artifact".to_string(),
+        ]
+    } else if is_escalation_response && requires_confirmation {
         vec![
             "approve_follow_up_tasks".to_string(),
             "show_latest_artifacts".to_string(),
@@ -451,7 +491,9 @@ pub async fn continue_from_artifact(
     };
 
     Ok(Json(ContinueArtifactResponse {
-        ok: matches!(run.status, OpTaskRunStatus::Succeeded),
+        ok: run_opt
+            .as_ref()
+            .is_some_and(|run| matches!(run.status, OpTaskRunStatus::Succeeded)),
         intent: continuation.intent,
         source_artifact_type: artifact.artifact_type.clone(),
         allowed_continuations: allowed_continuations_for_artifact_type(&artifact.artifact_type),
@@ -471,12 +513,27 @@ pub async fn create_chatgpt_escalation_request(
     State(state): State<AppState>,
     Json(req): Json<CreateChatGptEscalationRequest>,
 ) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
+    create_chatgpt_escalation_request_internal(state, req).await
+}
+
+pub async fn create_chatgpt_escalation_request_deprecated(
+    State(state): State<AppState>,
+    Json(req): Json<CreateChatGptEscalationRequest>,
+) -> Result<(HeaderMap, Json<ChatGptEscalationArtifactResponse>), AppError> {
+    let response = create_chatgpt_escalation_request_internal(state, req).await?;
+    Ok((add_deprecated_alias_headers(), response))
+}
+
+async fn create_chatgpt_escalation_request_internal(
+    state: AppState,
+    req: CreateChatGptEscalationRequest,
+) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
     ensure_structured_json(&req.content_json, "content_json")?;
-    let policy_decision = classify_escalation_artifact_policy(
-        req.content_text.as_deref(),
-        &req.content_json,
-        req.confirm,
-    )?;
+    let redaction =
+        redact_request_for_escalation(req.content_text.as_deref(), &req.content_json, req.confirm);
+    if !redaction.policy_decision.allowed {
+        return Err(AppError::PolicyDenied(redaction.policy_decision.reason));
+    }
     let run = state.op_tasks.get_run(req.run_id).await?;
     if req
         .profile_id
@@ -505,12 +562,15 @@ pub async fn create_chatgpt_escalation_request(
                 "direction": "request",
                 "run_id": run.id,
                 "task_id": run.task_id,
-                "privacy_classification": policy_decision.privacy_classification,
-                "policy_decision": policy_decision,
+                "privacy_classification": redaction.policy_decision.privacy_classification,
+                "policy_decision": redaction.policy_decision,
+                "redaction_report": redaction.redaction_report,
+                "requires_confirmation": redaction.policy_decision.requires_confirmation,
+                "requested_confirmation": req.confirm,
             }),
         )),
-        content_text: req.content_text,
-        content_json: Some(req.content_json),
+        content_text: redaction.redacted_text.or(req.content_text),
+        content_json: Some(redaction.redacted_json),
     };
 
     let artifact = state.op_tasks.save_artifact(artifact).await?;
@@ -525,20 +585,52 @@ pub async fn save_chatgpt_escalation_response(
     Path(request_artifact_id): Path<Uuid>,
     Json(req): Json<SaveChatGptEscalationResponse>,
 ) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
+    save_chatgpt_escalation_response_internal(state, request_artifact_id, req).await
+}
+
+pub async fn save_chatgpt_escalation_response_deprecated(
+    State(state): State<AppState>,
+    Path(request_artifact_id): Path<Uuid>,
+    Json(req): Json<SaveChatGptEscalationResponse>,
+) -> Result<(HeaderMap, Json<ChatGptEscalationArtifactResponse>), AppError> {
+    let response =
+        save_chatgpt_escalation_response_internal(state, request_artifact_id, req).await?;
+    Ok((add_deprecated_alias_headers(), response))
+}
+
+async fn save_chatgpt_escalation_response_internal(
+    state: AppState,
+    request_artifact_id: Uuid,
+    req: SaveChatGptEscalationResponse,
+) -> Result<Json<ChatGptEscalationArtifactResponse>, AppError> {
     let response_text = clean_optional(req.response_text.as_deref());
     if req.content_json.is_none() && response_text.is_none() {
         return Err(AppError::BadRequest(
             "either content_json or response_text is required".to_string(),
         ));
     }
+    let raw_content_json = req
+        .content_json
+        .unwrap_or_else(|| json!({ "response_text": response_text }));
+    ensure_structured_json(&raw_content_json, "content_json")?;
+    ensure_no_escalation_secret(
+        clean_optional(req.content_text.as_deref()).as_deref(),
+        &raw_content_json,
+    )?;
+
+    let redaction = redact_request_for_escalation(
+        clean_optional(req.content_text.as_deref()).as_deref(),
+        &raw_content_json,
+        true,
+    );
+    if matches!(
+        redaction.policy_decision.privacy_classification,
+        EscalationPrivacyClass::Secret
+    ) {
+        return Err(AppError::PolicyDenied(redaction.policy_decision.reason));
+    }
+
     let content_text = clean_optional(req.content_text.as_deref()).or(response_text.clone());
-    let content_json = req.content_json.unwrap_or_else(|| {
-        json!({
-            "response_text": response_text,
-        })
-    });
-    ensure_structured_json(&content_json, "content_json")?;
-    ensure_no_secret_content(content_text.as_deref(), &content_json)?;
     let request_artifact = state.op_tasks.get_artifact(request_artifact_id).await?;
     if request_artifact.artifact_type != "chatgpt_escalation_request" {
         return Err(AppError::BadRequest(
@@ -572,10 +664,14 @@ pub async fn save_chatgpt_escalation_response(
                 "direction": "response",
                 "request_artifact_id": request_artifact.id,
                 "run_id": request_artifact.run_id,
+                "privacy_classification": redaction.policy_decision.privacy_classification,
+                "policy_decision": redaction.policy_decision,
+                "redaction_report": redaction.redaction_report,
+                "requested_confirmation": true,
             }),
         )),
         content_text,
-        content_json: Some(content_json),
+        content_json: Some(redaction.redacted_json),
     };
 
     let artifact = state.op_tasks.save_artifact(artifact).await?;
@@ -664,26 +760,21 @@ fn allowed_continuations_for_artifact_type(artifact_type: &str) -> Vec<String> {
         "operator_task_diagnostic" => &[
             "generate_patch_plan",
             "escalate_to_chatgpt",
-            "create_follow_up_tasks",
+            "convert_recommendation_to_tasks",
         ],
-        "operator_patch_plan" => &[
-            "create_implementation_tasks",
-            "create_docs_update_task",
-            "create_test_plan",
-        ],
+        "operator_patch_plan" => &["convert_recommendation_to_tasks", "summarize_artifact"],
         "operator_tool_spec" => &["create_tool_implementation_plan"],
-        "operator_openapi_review" => &["create_openapi_update_task"],
+        "operator_openapi_review" => &["summarize_artifact"],
         "chatgpt_escalation_response" => &[
             "generate_patch_plan",
-            "create_implementation_task_set",
-            "summarize_recommendation",
             "convert_recommendation_to_tasks",
+            "summarize_artifact",
         ],
         "operator_implementation_task_set" => &["approve_create_tasks", "continue_from_task_set"],
         "chatgpt_escalation_request" => &["save_chatgpt_response"],
-        "operator_gap_analysis" => &["design_task_type", "design_tool", "generate_patch_plan"],
-        "operator_task_type_spec" => &["create_implementation_tasks", "review_openapi_surface"],
-        "operator_test_plan" => &["create_test_task", "summarize_test_plan"],
+        "operator_gap_analysis" => &["summarize_artifact"],
+        "operator_task_type_spec" => &["generate_patch_plan", "summarize_artifact"],
+        "operator_test_plan" => &["summarize_artifact"],
         _ => &["summarize_artifact"],
     };
 
@@ -749,7 +840,7 @@ fn continue_from_operator_patch_plan(
         ],
     ) {
         return Ok(operator_continuation_plan(
-            "artifact.continue.operator_patch_plan.create_implementation_tasks",
+            "artifact.continue.operator_patch_plan.convert_recommendation_to_tasks",
             "Create implementation task set",
             "operator.convert_recommendation_to_tasks",
             "implementation_task_planning",
@@ -763,9 +854,9 @@ fn continue_from_operator_patch_plan(
     }
 
     let intent = if contains_any(&normalized, &["doc", "readme", "openapi"]) {
-        "artifact.continue.operator_patch_plan.create_docs_update_task"
+        "artifact.continue.operator_patch_plan.summarize"
     } else if contains_any(&normalized, &["test", "validation", "verify"]) {
-        "artifact.continue.operator_patch_plan.create_test_plan"
+        "artifact.continue.operator_patch_plan.summarize"
     } else {
         "artifact.continue.operator_patch_plan.summarize"
     };
@@ -787,16 +878,60 @@ fn continue_from_chatgpt_escalation_response(
     source: &str,
 ) -> Result<ArtifactContinuationPlan, AppError> {
     let normalized = message.to_lowercase();
-    let intent = if contains_any(&normalized, &["implementation", "task", "convert"]) {
-        "artifact.continue.chatgpt_escalation_response.convert_recommendation_to_tasks"
-    } else if contains_any(&normalized, &["patch plan", "plan"]) {
-        "artifact.continue.chatgpt_escalation_response.generate_patch_plan"
-    } else {
-        "artifact.continue.chatgpt_escalation_response.summarize_recommendation"
-    };
+    if contains_any(&normalized, &["escalate", "chatgpt", "chat gpt"]) {
+        return Ok(operator_continuation_plan(
+            "artifact.continue.chatgpt_escalation_response.escalate_to_chatgpt",
+            "Escalate follow-up with additional context",
+            "operator.escalate_to_chatgpt",
+            "escalation_packet",
+            artifact,
+            message,
+            source,
+            json!({
+                "mode": "manual",
+                "confirm": false,
+                "desired_output": "Review this follow-up request and return structured recommendations.",
+                "context_json": artifact.content_json,
+                "context_text": artifact.content_text,
+            }),
+        ));
+    }
+
+    if contains_any(&normalized, &["patch plan", "patching", "patch"]) {
+        return Ok(operator_continuation_plan(
+            "artifact.continue.chatgpt_escalation_response.generate_patch_plan",
+            "Generate patch plan from escalation response",
+            "operator.generate_patch_plan",
+            "patch_plan",
+            artifact,
+            message,
+            source,
+            json!({
+                "artifact_id": artifact.id,
+            }),
+        ));
+    }
+
+    if contains_any(
+        &normalized,
+        &["implementation", "task", "convert", "create"],
+    ) {
+        return Ok(operator_continuation_plan(
+            "artifact.continue.chatgpt_escalation_response.convert_recommendation_to_tasks",
+            "Create implementation task set from escalation response",
+            "operator.convert_recommendation_to_tasks",
+            "implementation_task_planning",
+            artifact,
+            message,
+            source,
+            json!({
+                "artifact_id": artifact.id,
+            }),
+        ));
+    }
 
     Ok(operator_continuation_plan(
-        intent,
+        "artifact.continue.chatgpt_escalation_response.summarize_recommendation",
         "Continue from ChatGPT escalation response",
         "artifact.summarize",
         "escalation_follow_up",
@@ -1206,8 +1341,25 @@ fn classify_recommended_task_type(title: &str, detail: Option<&str>) -> String {
         &["search", "find", "look up", "web", "internet"],
     ) {
         "reader.search_web".to_string()
+    } else if contains_any(
+        &normalized,
+        &["operator patch plan", "patch plan", "generate patch"],
+    ) {
+        "operator.generate_patch_plan".to_string()
     } else if contains_any(&normalized, &["read url", "read page", "fetch url"]) {
         "reader.read_url".to_string()
+    } else if contains_any(
+        &normalized,
+        &[
+            "implementation",
+            "implement tasks",
+            "create tasks",
+            "task set",
+            "taskset",
+            "convert recommendation",
+        ],
+    ) {
+        "operator.convert_recommendation_to_tasks".to_string()
     } else if contains_any(&normalized, &["status", "health check", "system report"]) {
         "system.status_report".to_string()
     } else if contains_any(&normalized, &["escalate", "chatgpt", "chat gpt"]) {
@@ -1223,6 +1375,8 @@ fn is_supported_follow_up_task_type(task_type: &str) -> bool {
         "artifact.summarize"
             | "employment.search_opportunities"
             | "operator.escalate_to_chatgpt"
+            | "operator.generate_patch_plan"
+            | "operator.convert_recommendation_to_tasks"
             | "reader.read_url"
             | "reader.search_web"
             | "system.status_report"
@@ -1282,6 +1436,22 @@ fn build_recommended_action_input(
             "source_artifact_id": artifact.id,
             "source_artifact_type": artifact.artifact_type,
             "model_purpose": "escalation_packet",
+        }),
+        "operator.generate_patch_plan" => json!({
+            "user_request": user_request,
+            "artifact_id": artifact.id,
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "patch_plan",
+        }),
+        "operator.convert_recommendation_to_tasks" => json!({
+            "user_request": user_request,
+            "artifact_id": artifact.id,
+            "source": source,
+            "source_artifact_id": artifact.id,
+            "source_artifact_type": artifact.artifact_type,
+            "model_purpose": "implementation_task_planning",
         }),
         _ => json!({
             "user_request": user_request,
@@ -1404,130 +1574,8 @@ fn ensure_structured_json(value: &Value, field_name: &str) -> Result<(), AppErro
     }
 }
 
-fn classify_escalation_artifact_policy(
-    content_text: Option<&str>,
-    content_json: &Value,
-    confirm: bool,
-) -> Result<EscalationArtifactPolicyDecision, AppError> {
-    ensure_no_secret_content(content_text, content_json)?;
-    let text = format!(
-        "{} {}",
-        content_text.unwrap_or_default(),
-        serde_json::to_string(content_json).unwrap_or_default()
-    )
-    .to_lowercase();
-
-    let privacy_classification = if contains_any(
-        &text,
-        &[
-            "resume",
-            "employment",
-            "job",
-            "opportunity",
-            "salary",
-            "cover letter",
-            "interview",
-            "candidate",
-            "career",
-        ],
-    ) {
-        EscalationArtifactPrivacyClass::Employment
-    } else if contains_any(
-        &text,
-        &[
-            "email",
-            "phone",
-            "address",
-            "medical",
-            "health",
-            "family",
-            "personal",
-            "ssn",
-            "social security",
-        ],
-    ) {
-        EscalationArtifactPrivacyClass::Personal
-    } else {
-        EscalationArtifactPrivacyClass::TechnicalOnly
-    };
-
-    match privacy_classification {
-        EscalationArtifactPrivacyClass::TechnicalOnly => Ok(EscalationArtifactPolicyDecision {
-            allowed: true,
-            requires_confirmation: false,
-            privacy_classification,
-            reason: "Technical-only escalation is allowed without confirmation.".to_string(),
-        }),
-        EscalationArtifactPrivacyClass::Personal | EscalationArtifactPrivacyClass::Employment
-            if confirm =>
-        {
-            Ok(EscalationArtifactPolicyDecision {
-                allowed: true,
-                requires_confirmation: true,
-                privacy_classification,
-                reason: "Confirmed personal or employment escalation.".to_string(),
-            })
-        }
-        EscalationArtifactPrivacyClass::Personal | EscalationArtifactPrivacyClass::Employment => {
-            Err(AppError::PolicyDenied(
-                "personal or employment escalation requires confirmation".to_string(),
-            ))
-        }
-    }
-}
-
-fn ensure_no_secret_content(
-    content_text: Option<&str>,
-    content_json: &Value,
-) -> Result<(), AppError> {
-    let text = format!(
-        "{} {}",
-        content_text.unwrap_or_default(),
-        serde_json::to_string(content_json).unwrap_or_default()
-    );
-    let lower = text.to_lowercase();
-    if contains_any(
-        &lower,
-        &[
-            "password",
-            "api_key",
-            "apikey",
-            "secret",
-            "authorization",
-            "bearer ",
-            "private_key",
-            "token",
-            "cookie",
-        ],
-    ) || text.split_whitespace().any(looks_like_secret_token)
-    {
-        return Err(AppError::PolicyDenied(
-            "escalation artifact contains secrets and is blocked".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
 fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
-}
-
-fn looks_like_secret_token(value: &str) -> bool {
-    let trimmed = value.trim_matches(|ch: char| {
-        matches!(ch, ',' | '.' | ';' | ':' | '"' | '\'' | ')' | ']' | '}')
-    });
-    if trimmed.len() == 36 && trimmed.chars().filter(|ch| *ch == '-').count() == 4 {
-        return false;
-    }
-
-    trimmed.starts_with("sk-")
-        || trimmed.starts_with("ghp_")
-        || trimmed.starts_with("xoxb-")
-        || (trimmed.len() >= 32
-            && trimmed
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
 }
 
 fn clean_optional(value: Option<&str>) -> Option<String> {
@@ -1633,4 +1681,650 @@ fn json_path_action(
         value["run_id"] = Value::String(run_id.to_string());
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use axum::extract::{Path, State};
+    use axum::Json;
+    use chrono::Utc;
+    use sqlx::SqlitePool;
+
+    fn default_profile_id() -> Uuid {
+        default_employment_profile_id()
+    }
+
+    async fn test_state() -> AppState {
+        let config = AppConfig::load().expect("load default test config");
+        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations")
+            .run(&db)
+            .await
+            .expect("run migrations");
+        AppState::new(config, db).await.expect("create app state")
+    }
+
+    #[test]
+    fn artifact_continuations_for_operator_diagnostic_and_response_are_meta_actions() {
+        let diagnostic_continuations =
+            allowed_continuations_for_artifact_type("operator_task_diagnostic");
+        assert_eq!(
+            diagnostic_continuations,
+            vec![
+                "generate_patch_plan",
+                "escalate_to_chatgpt",
+                "convert_recommendation_to_tasks"
+            ]
+        );
+
+        let response_continuations =
+            allowed_continuations_for_artifact_type("chatgpt_escalation_response");
+        assert_eq!(
+            response_continuations,
+            vec![
+                "generate_patch_plan",
+                "convert_recommendation_to_tasks",
+                "summarize_artifact"
+            ]
+        );
+
+        assert!(is_supported_follow_up_task_type(
+            "operator.generate_patch_plan"
+        ));
+        assert!(is_supported_follow_up_task_type(
+            "operator.convert_recommendation_to_tasks"
+        ));
+    }
+
+    #[test]
+    fn continue_from_chatgpt_escalation_response_maps_to_operator_tasks() {
+        let artifact = TaskArtifact {
+            id: Uuid::new_v4(),
+            profile_id: default_profile_id(),
+            run_id: Uuid::new_v4(),
+            work_item_id: None,
+            name: "escalation response".to_string(),
+            artifact_type: "chatgpt_escalation_response".to_string(),
+            location: None,
+            created_at: Utc::now(),
+            metadata: None,
+            content_text: Some("Found gaps in patch plan.".to_string()),
+            content_json: Some(json!({"findings": ["fix search"]})),
+        };
+
+        let plan = continue_from_chatgpt_escalation_response(
+            &artifact,
+            "Generate a patch plan from this response",
+            "unit_test",
+        )
+        .expect("plan");
+        assert_eq!(plan.task_type, "operator.generate_patch_plan");
+        assert_eq!(
+            plan.intent,
+            "artifact.continue.chatgpt_escalation_response.generate_patch_plan"
+        );
+        assert_eq!(
+            plan.input_json.get("artifact_id"),
+            Some(&serde_json::Value::String(artifact.id.to_string()))
+        );
+
+        let plan = continue_from_chatgpt_escalation_response(
+            &artifact,
+            "create implementation tasks from this",
+            "unit_test",
+        )
+        .expect("plan");
+        assert_eq!(plan.task_type, "operator.convert_recommendation_to_tasks");
+        assert_eq!(
+            plan.intent,
+            "artifact.continue.chatgpt_escalation_response.convert_recommendation_to_tasks"
+        );
+    }
+
+    #[test]
+    fn recommended_task_type_classifies_operator_follow_up_requests() {
+        assert_eq!(
+            classify_recommended_task_type("prepare a patch plan", Some("include context")),
+            "operator.generate_patch_plan"
+        );
+        assert_eq!(
+            classify_recommended_task_type(
+                "Create implementation tasks",
+                Some("build follow-up set")
+            ),
+            "operator.convert_recommendation_to_tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_from_artifact_without_run_immediately_does_not_create_run_links() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let seed_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "artifact.summarize".to_string(),
+                "Seed artifact source task".to_string(),
+                None,
+                json!({
+                    "source_artifact_id": "00000000-0000-0000-0000-000000000000",
+                    "model_name": "unit-test",
+                }),
+                true,
+            )
+            .await
+            .expect("seed op task");
+        let seed_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(seed_run_id.to_string())
+        .bind(seed_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seeded source run for continuation test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let source_artifact = state
+            .op_tasks
+            .save_artifact(TaskArtifact {
+                id: Uuid::new_v4(),
+                profile_id,
+                run_id: seed_run_id,
+                work_item_id: None,
+                name: "Seed source artifact".to_string(),
+                artifact_type: "artifact.test_source".to_string(),
+                location: None,
+                created_at: Utc::now(),
+                metadata: None,
+                content_text: Some("seed artifact content".to_string()),
+                content_json: None,
+            })
+            .await
+            .expect("seed artifact");
+
+        let response = continue_from_artifact(
+            State(state.clone()),
+            Path(source_artifact.id),
+            Json(ContinueArtifactRequest {
+                message: "Draft continuation without executing".to_string(),
+                profile_id: Some(profile_id),
+                source: Some("unit_test".to_string()),
+                confirm: false,
+                create_tasks: false,
+                run_immediately: false,
+            }),
+        )
+        .await
+        .expect("continue response");
+
+        let response = response.0;
+        assert!(response.run.is_none());
+        assert_eq!(response.task_request.status, "created");
+        assert_eq!(response.task_request.run_id, None);
+
+        let task_runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM op_task_runs WHERE task_id = ?1")
+                .bind(
+                    response
+                        .task_request
+                        .op_task_id
+                        .expect("task id")
+                        .to_string(),
+                )
+                .fetch_one(&state.db)
+                .await
+                .expect("count task runs");
+        assert_eq!(task_runs, 0);
+
+        let produced_run_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'op_task_run' AND relationship = 'produced_run'",
+        )
+        .bind(response.task_request.id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced run links");
+        assert_eq!(produced_run_links, 0);
+
+        let produced_artifact_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'task_artifact' AND relationship = 'produced_artifact'",
+        )
+        .bind(response.task_request.id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced artifact links");
+        assert_eq!(produced_artifact_links, 0);
+    }
+
+    #[tokio::test]
+    async fn continue_from_artifact_with_run_immediately_executes_and_links_run() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let source_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "artifact.summarize".to_string(),
+                "Seed artifact source task".to_string(),
+                None,
+                json!({
+                    "source_artifact_id": "00000000-0000-0000-0000-000000000000",
+                    "model_name": "unit-test",
+                }),
+                true,
+            )
+            .await
+            .expect("seed op task");
+
+        let source_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(source_run_id.to_string())
+        .bind(source_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seed source run for continuation execution test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let source_artifact = state
+            .op_tasks
+            .save_artifact(TaskArtifact {
+                id: Uuid::new_v4(),
+                profile_id,
+                run_id: source_run_id,
+                work_item_id: None,
+                name: "Seed source artifact".to_string(),
+                artifact_type: "artifact.test_source".to_string(),
+                location: None,
+                created_at: Utc::now(),
+                metadata: None,
+                content_text: Some("seed artifact content".to_string()),
+                content_json: Some(json!({"summary": "seed artifact json"})),
+            })
+            .await
+            .expect("seed artifact");
+
+        let response = continue_from_artifact(
+            State(state.clone()),
+            Path(source_artifact.id),
+            Json(ContinueArtifactRequest {
+                message: "Summarize this source artifact".to_string(),
+                profile_id: Some(profile_id),
+                source: Some("unit_test".to_string()),
+                confirm: false,
+                create_tasks: false,
+                run_immediately: true,
+            }),
+        )
+        .await
+        .expect("continue response");
+
+        let response = response.0;
+        assert!(response.run.is_some());
+        assert_eq!(response.task_request.status, "succeeded");
+        assert!(response.task_request.run_id.is_some());
+        assert_eq!(
+            response.run.as_ref().expect("run summary").status,
+            OpTaskRunStatus::Succeeded
+        );
+
+        let run_id = response.run.as_ref().expect("run summary").id;
+        assert_eq!(response.task_request.run_id.unwrap(), run_id);
+
+        let run_status_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM op_task_runs WHERE id = ?1")
+                .bind(run_id.to_string())
+                .fetch_one(&state.db)
+                .await
+                .expect("count run row");
+        assert_eq!(run_status_count, 1);
+
+        let produced_run_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'op_task_run' AND relationship = 'produced_run'",
+        )
+        .bind(response.task_request.id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced run links");
+        assert_eq!(produced_run_links, 1);
+
+        let produced_artifact_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'task_artifact' AND relationship = 'produced_artifact'",
+        )
+        .bind(response.task_request.id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced artifact links");
+        assert!(produced_artifact_links >= 1);
+
+        let run_status: String =
+            sqlx::query_scalar("SELECT status FROM op_task_runs WHERE id = ?1")
+                .bind(run_id.to_string())
+                .fetch_one(&state.db)
+                .await
+                .expect("get run status");
+        assert_eq!(run_status, "Succeeded");
+    }
+
+    #[tokio::test]
+    async fn create_chatgpt_escalation_request_blocks_personal_employment_without_confirmation() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let seed_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "system.status_report".to_string(),
+                "Seed status task".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("seed op task");
+
+        let seed_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(seed_run_id.to_string())
+        .bind(seed_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seed source run for escalation request policy test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let result = create_chatgpt_escalation_request_internal(
+            state.clone(),
+            CreateChatGptEscalationRequest {
+                run_id: seed_run_id,
+                profile_id: Some(profile_id),
+                confirm: false,
+                work_item_id: None,
+                name: Some("Escalation blocked".to_string()),
+                metadata: None,
+                content_text: Some(
+                    "Please review this resume and suggest an employment action.".to_string(),
+                ),
+                content_json: json!({
+                    "resume_context": "candidate is applying for engineering roles",
+                }),
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::PolicyDenied(_))));
+
+        let artifacts = state
+            .op_tasks
+            .list_artifacts(ArtifactSearch {
+                run_id: Some(seed_run_id),
+                include_content: Some(false),
+                limit: Some(10),
+                offset: Some(0),
+                ..Default::default()
+            })
+            .await
+            .expect("list artifacts");
+        assert!(artifacts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_chatgpt_escalation_request_applies_redaction_and_records_metadata() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let seed_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "system.status_report".to_string(),
+                "Seed status task".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("seed op task");
+
+        let seed_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(seed_run_id.to_string())
+        .bind(seed_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seed source run for escalation request redaction test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let response = create_chatgpt_escalation_request(
+            State(state.clone()),
+            Json(CreateChatGptEscalationRequest {
+                run_id: seed_run_id,
+                profile_id: Some(profile_id),
+                confirm: false,
+                work_item_id: None,
+                name: Some("Escalation request".to_string()),
+                metadata: Some(json!({
+                    "request_case": "metadata-test",
+                })),
+                content_text: Some(
+                    "Need a technical review of a timeout regression in production telemetry"
+                        .to_string(),
+                ),
+                content_json: json!({
+                    "notes": "analysis of service restart loops"
+                }),
+            }),
+        )
+        .await
+        .expect("escalation request");
+
+        let artifact = response.0.artifact;
+        assert_eq!(artifact.artifact_type, "chatgpt_escalation_request");
+        assert_eq!(
+            artifact.content_text.unwrap(),
+            "Need a technical review of a timeout regression in production telemetry"
+        );
+        let metadata = artifact.metadata.expect("metadata");
+        assert!(metadata.get("privacy_classification").is_some());
+        assert!(metadata.get("redaction_report").is_some());
+        assert!(metadata.get("policy_decision").is_some());
+        assert_eq!(
+            metadata.get("requires_confirmation"),
+            Some(&serde_json::json!(false))
+        );
+    }
+
+    #[tokio::test]
+    async fn save_chatgpt_escalation_response_stores_artifact_and_request_link() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let seed_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "system.status_report".to_string(),
+                "Seed status task".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("seed op task");
+
+        let seed_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(seed_run_id.to_string())
+        .bind(seed_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seed source run for escalation response test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let request = create_chatgpt_escalation_request_internal(
+            state.clone(),
+            CreateChatGptEscalationRequest {
+                run_id: seed_run_id,
+                profile_id: Some(profile_id),
+                confirm: false,
+                work_item_id: None,
+                name: Some("Escalation request".to_string()),
+                metadata: None,
+                content_text: Some(
+                    "Need a technical review of a recent deployment issue.".to_string(),
+                ),
+                content_json: json!({
+                    "notes": "pipeline flake investigation"
+                }),
+            },
+        )
+        .await
+        .expect("create escalation request")
+        .0;
+
+        let response = save_chatgpt_escalation_response_internal(
+            state.clone(),
+            request.artifact.id,
+            SaveChatGptEscalationResponse {
+                profile_id: Some(profile_id),
+                work_item_id: None,
+                name: Some("Escalation response".to_string()),
+                metadata: None,
+                content_text: Some(
+                    "Root-cause analysis suggests increasing queue worker concurrency.".to_string(),
+                ),
+                response_text: None,
+                content_json: Some(json!({
+                    "findings": [
+                        "queue depth spikes before deployments",
+                        "retry backoff may be too short"
+                    ],
+                    "next_steps": [
+                        "add circuit breaker",
+                        "tighten retry jitter",
+                    ],
+                })),
+            },
+        )
+        .await
+        .expect("save escalation response")
+        .0;
+
+        let artifact = response.artifact;
+        assert_eq!(artifact.artifact_type, "chatgpt_escalation_response");
+        assert_eq!(
+            response.linked_request_artifact_id,
+            Some(request.artifact.id)
+        );
+        let metadata = artifact.metadata.expect("metadata");
+        assert!(metadata.get("privacy_classification").is_some());
+        assert!(metadata.get("policy_decision").is_some());
+        assert!(metadata.get("redaction_report").is_some());
+
+        let links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_artifact' AND source_id = ?1 AND target_type = 'task_artifact' AND target_id = ?2 AND relationship = 'responds_to_escalation_request'",
+        )
+        .bind(artifact.id.to_string())
+        .bind(request.artifact.id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("find link");
+        assert_eq!(links, 1);
+    }
+
+    #[tokio::test]
+    async fn save_chatgpt_escalation_response_blocks_secret_content() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let seed_task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "system.status_report".to_string(),
+                "Seed status task".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("seed op task");
+
+        let seed_run_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO op_task_runs (id, task_id, profile_id, status, work_items_json, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(seed_run_id.to_string())
+        .bind(seed_task.id.to_string())
+        .bind(profile_id.to_string())
+        .bind("Succeeded")
+        .bind("[]")
+        .bind("Seed source run for escalation response secret test")
+        .execute(&state.db)
+        .await
+        .expect("seed source run");
+
+        let request = create_chatgpt_escalation_request_internal(
+            state.clone(),
+            CreateChatGptEscalationRequest {
+                run_id: seed_run_id,
+                profile_id: Some(profile_id),
+                confirm: false,
+                work_item_id: None,
+                name: Some("Escalation request".to_string()),
+                metadata: None,
+                content_text: Some(
+                    "Need technical diagnosis for intermittent failures.".to_string(),
+                ),
+                content_json: json!({
+                    "notes": "deployment pipeline"
+                }),
+            },
+        )
+        .await
+        .expect("create escalation request")
+        .0;
+
+        let result = save_chatgpt_escalation_response_internal(
+            state.clone(),
+            request.artifact.id,
+            SaveChatGptEscalationResponse {
+                profile_id: Some(profile_id),
+                work_item_id: None,
+                name: None,
+                metadata: None,
+                content_text: Some("Use api_key=abcdabcdabcdabcdabcdabcdabcdabcd".to_string()),
+                response_text: None,
+                content_json: Some(json!({"recommendation": "masked"})),
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::PolicyDenied(_))));
+    }
 }

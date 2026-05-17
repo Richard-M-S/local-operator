@@ -388,9 +388,10 @@ pub async fn openapi_json() -> Json<Value> {
             },
             "/api/operator-meta/escalations": {
                 "post": {
+                    "deprecated": true,
                     "operationId": "createEscalationRequest",
                     "summary": "Create a ChatGPT escalation request artifact",
-                    "description": "Debug/admin endpoint. Safety Level 2: plan/escalation packet only. Creates a chatgpt_escalation_request artifact attached to an existing run. For normal use, prefer createTaskFromNaturalLanguage with an escalation request so Local Operator collects and redacts context first.",
+                    "description": "Deprecated alias for the canonical escalation request endpoint. Use /api/artifacts/chatgpt-escalation-requests instead. This endpoint remains for compatibility.",
                     "security": [{ "BearerAuth": [] }],
                     "requestBody": {
                         "required": true,
@@ -414,9 +415,10 @@ pub async fn openapi_json() -> Json<Value> {
             },
             "/api/operator-meta/escalations/{artifact_id}/response": {
                 "post": {
+                    "deprecated": true,
                     "operationId": "submitEscalationResponse",
                     "summary": "Save a ChatGPT escalation response artifact",
-                    "description": "Debug/admin endpoint. Safety Level 2: response capture only. Saves a chatgpt_escalation_response artifact and links it back to the request artifact identified by artifact_id. Never executes recommended actions automatically.",
+                    "description": "Deprecated alias for the canonical escalation response endpoint. Use /api/artifacts/{artifact_id}/chatgpt-escalation-response instead.",
                     "security": [{ "BearerAuth": [] }],
                     "parameters": [
                         { "$ref": "#/components/parameters/ArtifactId" }
@@ -636,7 +638,7 @@ pub async fn openapi_json() -> Json<Value> {
                 "post": {
                     "operationId": "continueFromArtifact",
                     "summary": "Continue working from an artifact",
-                    "description": "Use continueFromArtifact when the user wants to take the next step based on prior output, for example 'read the top results', 'score these jobs', 'create opportunities from those matches', 'summarize that page', or 'recommend next actions from this snapshot'. This creates a new TaskRequest and OpTask seeded from the artifact, runs it, and returns generated artifacts.",
+                    "description": "Use continueFromArtifact when the user wants to take the next step based on prior output, for example 'read the top results', 'score these jobs', 'create opportunities from those matches', 'summarize that page', or 'recommend next actions from this snapshot'. This creates a new TaskRequest and OpTask seeded from the artifact. Set run_immediately=false to create the task without running it yet.",
                     "security": [{ "BearerAuth": [] }],
                     "parameters": [
                         { "$ref": "#/components/parameters/ArtifactId" }
@@ -651,14 +653,26 @@ pub async fn openapi_json() -> Json<Value> {
                                         "summary": "Score the top search results",
                                         "value": {
                                             "message": "Read the top 3 results and score them against my profile.",
-                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "run_immediately": true
                                         }
                                     },
                                     "createOpportunities": {
                                         "summary": "Create records from scored matches",
                                         "value": {
                                             "message": "Create opportunities for the matches that pass the score threshold.",
-                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "run_immediately": true
+                                        }
+                                    },
+                                    "dryRun": {
+                                        "summary": "Plan continuation without execution",
+                                        "value": {
+                                            "message": "Create tasks from these suggestions when confirmed.",
+                                            "profile_id": DEFAULT_EMPLOYMENT_PROFILE_ID,
+                                            "run_immediately": false,
+                                            "create_tasks": false,
+                                            "confirm": false
                                         }
                                     },
                                     "summarizeSnapshot": {
@@ -1486,6 +1500,11 @@ pub async fn openapi_json() -> Json<Value> {
                             "type": "boolean",
                             "default": false,
                             "description": "Set true when the user approves creating draft OpTasks from escalation recommendations. Created tasks are linked to the response artifact, saved paused/draft, and are not executed automatically."
+                        },
+                        "run_immediately": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Set false to create the follow-up task without executing it immediately. This allows clients to inspect planned inputs before explicit run."
                         }
                     }
                 },
@@ -1527,7 +1546,12 @@ pub async fn openapi_json() -> Json<Value> {
                         },
                         "task_request": { "$ref": "#/components/schemas/TaskRequest" },
                         "task": { "$ref": "#/components/schemas/OpTask" },
-                        "run": { "$ref": "#/components/schemas/OpTaskRunSummary" },
+                        "run": {
+                            "type": "object",
+                            "nullable": true,
+                            "allOf": [{ "$ref": "#/components/schemas/OpTaskRunSummary" }],
+                            "description": "Only included when run_immediately is true."
+                        },
                         "artifacts": {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/TaskRunArtifactSummary" }

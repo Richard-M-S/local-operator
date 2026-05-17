@@ -202,6 +202,181 @@ pub async fn run(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::models::session::TaskRequest;
+    use axum::extract::{Path, State};
+    use sqlx::SqlitePool;
+
+    fn default_profile_id() -> Uuid {
+        default_employment_profile_id()
+    }
+
+    async fn test_state() -> AppState {
+        let config = AppConfig::load().expect("load default test config");
+        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations")
+            .run(&db)
+            .await
+            .expect("run migrations");
+        AppState::new(config, db).await.expect("create app state")
+    }
+
+    #[tokio::test]
+    async fn run_task_request_success_creates_run_and_links() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "system.status_report".to_string(),
+                "Run system status report".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("create task");
+
+        let task_request = state
+            .session_memory
+            .create_task_request(TaskRequest {
+                id: Uuid::new_v4(),
+                profile_id,
+                source: "unit_test".to_string(),
+                user_request: "Run a status report".to_string(),
+                intent: Some(task.task_type.clone()),
+                status: "created".to_string(),
+                op_task_id: Some(task.id),
+                run_id: None,
+                primary_artifact_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create task request");
+
+        let response = run(State(state.clone()), Path(task_request.id), None)
+            .await
+            .expect("run task request")
+            .0;
+
+        assert!(response.ok);
+        assert_eq!(response.status, OpTaskRunStatus::Succeeded);
+        assert_eq!(response.task_request_id, task_request.id);
+        assert_eq!(response.task_id, task.id);
+        assert_eq!(response.artifacts.len(), 1);
+
+        let (stored_status, stored_run_id): (String, Option<String>) =
+            sqlx::query_as("SELECT status, run_id FROM task_requests WHERE id = ?1")
+                .bind(task_request.id.to_string())
+                .fetch_one(&state.db)
+                .await
+                .expect("fetch task request row");
+        assert_eq!(stored_status, "succeeded");
+        assert_eq!(
+            stored_run_id.expect("run id").as_str(),
+            response.run_id.to_string()
+        );
+
+        let produced_run_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'op_task_run' AND relationship = 'produced_run'",
+        )
+        .bind(response.task_request_id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced run links");
+        assert_eq!(produced_run_links, 1);
+
+        let produced_artifact_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'task_artifact' AND relationship = 'produced_artifact'",
+        )
+        .bind(response.task_request_id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced artifact links");
+        assert_eq!(produced_artifact_links, 1);
+    }
+
+    #[tokio::test]
+    async fn run_task_request_failure_updates_status_and_marks_failed() {
+        let state = test_state().await;
+        let profile_id = default_profile_id();
+
+        let task = state
+            .op_tasks
+            .create_task(
+                profile_id,
+                "unsupported.task_type".to_string(),
+                "Unsupported task".to_string(),
+                None,
+                json!({}),
+                true,
+            )
+            .await
+            .expect("create task");
+
+        let task_request = state
+            .session_memory
+            .create_task_request(TaskRequest {
+                id: Uuid::new_v4(),
+                profile_id,
+                source: "unit_test".to_string(),
+                user_request: "Run unsupported task".to_string(),
+                intent: Some(task.task_type.clone()),
+                status: "created".to_string(),
+                op_task_id: Some(task.id),
+                run_id: None,
+                primary_artifact_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create task request");
+
+        let response = run(State(state.clone()), Path(task_request.id), None)
+            .await
+            .expect("run task request")
+            .0;
+
+        assert!(!response.ok);
+        assert_eq!(response.status, OpTaskRunStatus::Failed);
+
+        let (stored_status, stored_run_id): (String, Option<String>) =
+            sqlx::query_as("SELECT status, run_id FROM task_requests WHERE id = ?1")
+                .bind(task_request.id.to_string())
+                .fetch_one(&state.db)
+                .await
+                .expect("fetch task request row");
+        assert_eq!(stored_status, "failed");
+        assert_eq!(stored_run_id.expect("run id"), response.run_id.to_string());
+
+        assert!(response.artifacts.is_empty());
+
+        let produced_run_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'op_task_run' AND relationship = 'produced_run'",
+        )
+        .bind(response.task_request_id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced run links");
+        assert_eq!(produced_run_links, 1);
+
+        let produced_artifact_links: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_links WHERE source_type = 'task_request' AND source_id = ?1 AND target_type = 'task_artifact' AND relationship = 'produced_artifact'",
+        )
+        .bind(response.task_request_id.to_string())
+        .fetch_one(&state.db)
+        .await
+        .expect("count produced artifact links");
+        assert_eq!(produced_artifact_links, 0);
+    }
+}
+
 impl From<&TaskArtifact> for TaskRunArtifactSummary {
     fn from(artifact: &TaskArtifact) -> Self {
         Self {

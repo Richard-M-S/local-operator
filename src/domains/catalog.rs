@@ -873,16 +873,12 @@ fn operator_domain() -> DomainDescriptor {
                 &[
                     "generate_patch_plan",
                     "escalate_to_chatgpt",
-                    "create_follow_up_tasks",
+                    "convert_recommendation_to_tasks",
                 ],
             ),
             (
                 "operator_patch_plan",
-                &[
-                    "create_implementation_tasks",
-                    "create_docs_update_task",
-                    "create_test_plan",
-                ],
+                &["convert_recommendation_to_tasks", "generate_patch_plan", "summarize_artifact"],
             ),
             (
                 "operator_tool_spec",
@@ -890,7 +886,7 @@ fn operator_domain() -> DomainDescriptor {
             ),
             (
                 "operator_openapi_review",
-                &["create_openapi_update_task"],
+                &["summarize_artifact"],
             ),
             (
                 "operator_implementation_task_set",
@@ -898,12 +894,7 @@ fn operator_domain() -> DomainDescriptor {
             ),
             (
                 "chatgpt_escalation_response",
-                &[
-                    "generate_patch_plan",
-                    "create_implementation_task_set",
-                    "summarize_recommendation",
-                    "convert_recommendation_to_tasks",
-                ],
+                &["generate_patch_plan", "convert_recommendation_to_tasks", "summarize_artifact"],
             ),
         ]),
     }

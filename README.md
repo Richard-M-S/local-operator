@@ -28,6 +28,7 @@ Working today:
 - domain catalog for Home Operations, Research, Code, Infrastructure, Knowledge, Calendar, and Operator task-improvement workflows
 - Operator meta workflow for failed-task diagnosis, patch-plan artifacts, implementation task-set artifacts, and read-only self-review
 - manual and optional OpenAI API ChatGPT escalation artifacts with redaction/policy metadata and response linking
+- meta task continuation surfaces for operator diagnostics and escalation responses
 - Operator Console for chat, profile setup, tasks, artifacts, daily review, and opportunity review
 
 Still intentionally basic:
@@ -42,6 +43,36 @@ Still intentionally basic:
 ## Run
 
 The default API config is in `config/default.toml`.
+
+## Development Tooling
+
+Recommended local tools for maintenance and debugging:
+
+- `rg` (ripgrep) for fast file and symbol search during review.
+- `grep`, `sed`, and `cat` remain acceptable fallbacks when `rg` is unavailable.
+
+Optional productivity helper:
+
+- `Makefile` targets below for a consistent build loop:
+
+```bash
+make run
+make check
+make lint
+make test
+make fmt
+make ci
+make search q="operator_meta"
+make run-console
+```
+
+If `rg` is not installed, `make search` uses `grep` automatically.
+
+Example:
+
+```bash
+rg -n "operator_meta" src
+```
 
 ```bash
 cargo run
@@ -136,8 +167,9 @@ Local Operator treats meaningful work as task-backed execution:
 1. A chat client, API caller, or console request creates a `TaskRequest`.
 2. The request is classified into an `OpTask`, such as `reader.search_web`, `employment.search_opportunities`, `operator.review_failed_task`, or `operator.escalate_to_chatgpt`.
 3. `TaskPlanner` or a domain planner creates ordered `OpWorkItem` steps before execution.
-4. The runner executes the task and saves durable artifacts.
-5. The client can inspect latest artifacts or continue from an artifact.
+4. Work items include explicit `model_purpose` and model routing hints for auditability.
+5. The runner executes the task and saves durable artifacts.
+6. The client can inspect latest artifacts or continue from an artifact.
 
 Preferred Open WebUI flow:
 
@@ -188,6 +220,12 @@ Implemented task types:
 - `operator.convert_recommendation_to_tasks`: consumes an `operator_patch_plan` and saves an `operator_implementation_task_set`
 - `operator.escalate_to_chatgpt`: collects and redacts context, then creates a `chatgpt_escalation_request` artifact; optional OpenAI API mode saves a linked response artifact
 
+Current safety boundaries (first three levels):
+
+- level 1: diagnose only (read task state, artifacts, summarize failure)
+- level 2: plan only (generate patch plans, specs, OpenAPI update plans)
+- level 3: create draft tasks (confirmation required)
+
 Operator artifact types:
 
 - `operator_task_diagnostic`
@@ -223,9 +261,16 @@ Important continuation examples:
 
 - `search_result_set` -> read URLs, extract candidates, score matches
 - `readable_web_page` -> summarize, extract structured data, promote to context
-- `operator_task_diagnostic` -> generate patch plan, escalate to ChatGPT
-- `operator_patch_plan` -> create implementation task set, create docs/test plan
-- `chatgpt_escalation_response` -> summarize recommendation, generate follow-up task set
+- `operator_task_diagnostic` -> generate patch plan, escalate to ChatGPT, convert recommendation to tasks
+- `operator_patch_plan` -> convert recommendation to task set
+- `chatgpt_escalation_response` -> generate patch plan, convert to tasks, summarize
+
+Continuation controls:
+
+- `run_immediately`: `false` creates only a task request/task (no run link, status remains `created`); `true` executes and links a run.
+- `run_immediately`: defaults to `true` for most clients.
+- `create_tasks`: enables task-creation follow-up actions where supported.
+- `confirm`: carried into confirmation-gated actions.
 
 Latest artifact responses include `allowed_continuations`, and continuation responses include the source artifact type plus allowed continuations.
 

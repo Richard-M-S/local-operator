@@ -49,11 +49,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/operator-meta/escalations",
-            post(artifacts::create_chatgpt_escalation_request),
+            post(artifacts::create_chatgpt_escalation_request_deprecated),
         )
         .route(
             "/api/operator-meta/escalations/:artifact_id/response",
-            post(artifacts::save_chatgpt_escalation_response),
+            post(artifacts::save_chatgpt_escalation_response_deprecated),
         )
         .route(
             "/api/operator-meta/artifacts/:artifact_id/convert-to-tasks",
